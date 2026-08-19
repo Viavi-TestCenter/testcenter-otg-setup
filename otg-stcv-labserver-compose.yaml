@@ -1,0 +1,48 @@
+version: '3'
+
+services:
+  stcv:
+    image: stc:latest
+    deploy:
+      replicas: 1
+    networks:
+      - admin-bridge
+      - test1-bridge
+    environment:
+       rx-buffer-size: 12
+  labserver:
+    container_name: labserver
+    image: labserver:latest
+    network_mode: host
+    restart: always
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+    shm_size: '250m'
+    deploy:
+      replicas: 1
+    environment:
+      SPIRENTD_LICENSE_FILE: ${LICENSE_SERVER}
+    volumes:
+      - /data/:/data
+  otg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LSERVER: ${LABSERVER}
+        OTG: ${otg_build}
+    image: otg:latest
+    ports: ["48153-48200:50051","49153-49200:50052"]
+    deploy:
+      replicas: 1
+    tty: true
+    volumes:
+      - /home/viavi/demo/testdata/:/share
+    command: "tail -f /dev/null"
+networks:
+  admin-bridge:
+    driver: bridge
+  test1-bridge:
+    driver: bridge
