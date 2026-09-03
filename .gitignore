@@ -1,0 +1,23 @@
+# Runtime files
+.run_snappi_test/
+clab-*/
+container/images/
+
+# Large binary/files
+*.tar.xz
+*.tar.gz
+*.tar
+*.tgz
+*.zip
+*.bk
+otgservice*
+
+# ignore logs
+*.log
+./logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
