@@ -1,0 +1,337 @@
+# =============================================================================
+# Patch:      snappi-stc-patch-v0.1.patch
+# Patch ver.: v0.1
+# Repo:       sonic-net/sonic-mgmt
+#
+# Compatibility declaration
+# -------------------------
+# Supported SONiC release: Not yet declared
+# sonic-mgmt release branch/tag: Not yet declared
+# Validated codebase branch:Not yet declared
+# Validated base revision: Not yet declared
+# Validated commit SHA: 91d8be388
+#
+# This patch was developed and validated against commit 91d8be388.
+#
+# Until an official supported SONiC release and corresponding upstream
+# sonic-mgmt release branch/tag are selected and validated, users should
+# reproduce the tested baseline by checking out the exact validated commit
+# shown above before applying this patch. Compatibility with other commits,
+# later changes on the same branch, upstream master, or an unlisted SONiC
+# release is not implied.
+
+# Author:     xiangning.he@viavisolutions.com
+# Purpose:    Fix the Snappi/STC (`tgen_ptf32`) testbed deploy + smoke-test
+#             pipeline: topo-name resolution, minigraph rendering, and the
+#             sonic-vs (software-forwarding) traffic-validation path in
+#             test_snappi.py.
+#
+# Validation scope
+# ----------------
+# The sonic-vs validation is a functional smoke test. It verifies the
+# Snappi/STC integration path, topology/minigraph deployment, port discovery,
+# ARP resolution, and bidirectional packet forwarding. It does not establish
+# or claim 40-Gbps performance, ASIC-equivalent behavior, buffering behavior,
+# complete PFC performance, scale, or long-duration stability. Hardware DUTs
+# continue to use the original strict zero-loss and throughput checks.
+#
+# -----------------------------------------------------------------------------
+# File-by-file summary
+# -----------------------------------------------------------------------------
+#
+# ansible/library/topo_facts.py
+#   Changed the `ptf32`/`ptf64` topo-name remap from a substring check
+#   (`'ptf32' in topo_name`) to an exact match (`topo_name == 'ptf32'`).
+#   The substring form silently matched `tgen_ptf32` - a distinct,
+#   purpose-built Snappi/STC physical topology - and remapped it to
+#   `topo_t1.yml`, loading a 32-VM/BGP T1 topology onto a 2-port physical
+#   testbed. The 5 real bare `ptf32`/`ptf64` testbeds in testbed.yaml still
+#   remap correctly under the exact-match form.
+#
+# ansible/config_sonic_basedon_testbed.yml
+#   Added `dut_type`/`vm` presence guards to 5 tasks (`is_tor_dut` fact,
+#   its default for dut_type-less topos, `enable_tunnel_qos_remap`,
+#   `testbed_vm_info`, and the two `interface_to_vms`/`ifindex_to_vms`
+#   with_dict tasks). Host-interfaces-only topos such as `tgen_ptf32`
+#   (once the topo_facts.py fix above stops it from borrowing T1's VM/
+#   dut_type data) have neither `dut_type` nor `vm` keys in
+#   `vm_topo_config`, so the prior unconditional lookups raised
+#   KeyError/undefined-variable failures during `deploy-mg`. Each guard
+#   was cross-checked against every topology in testbed.yaml (including
+#   `bmc-dual-mgmt`) to confirm no existing hardware/VM topology depends
+#   on the un-guarded behavior.
+#
+# ansible/templates/minigraph_png.j2
+#   Added an `is_tor_dut` guard alongside the `host_interfaces_by_dut`
+#   length check before iterating `vlan_intfs`. `vlan_intfs` is only
+#   populated when `is_tor_dut` is true; a host-interfaces topo with
+#   `is_tor_dut=false` (the state `tgen_ptf32` is in immediately after
+#   the topo_facts.py fix, before it declares `dut_type: ToRRouter`)
+#   otherwise crashed minigraph rendering with `'vlan_intfs' is
+#   undefined`.
+#
+# ansible/templates/minigraph_template.j2
+#   Added `{% set neighbor_eosvm_mgmt = neighbor_eosvm_mgmt | default({}) %}`
+#   in the branch taken when `vms` is defined but the `testbed_vm_info`
+#   task was skipped (STC/Snappi testbeds, per the `config_sonic_basedon_
+#   testbed.yml` guard above). Without the default, `minigraph_png.j2`'s
+#   `{% if VM_topo %}` block — truthy because `VM_topo` is the *string*
+#   "False" for `ptf*`-named topos, a separate latent Jinja2 truthiness
+#   issue left unchanged here — dereferenced `neighbor_eosvm_mgmt` while
+#   still undefined, aborting minigraph generation.
+#
+# tests/snappi_tests/test_snappi.py
+#   1. Added the missing `is_pfc_enabled` import required by the
+#      `snappi_testbed_config` fixture (every other snappi test file
+#      already imported it; this one was the exception, causing
+#      `fixture 'is_pfc_enabled' not found`).
+#   2. Added `asic_type == 'vs'` detection (same idiom used elsewhere in
+#      the repo, e.g. reboot.py, pfc_storm.py) and, only for sonic-vs
+#      (software-forwarding, no ASIC) DUTs: throttled the offered load
+#      to VS_RATE_PERCENT=5% of line rate and replaced the exact
+#      `rx_frames == tx_frames` assertion with a bounded
+#      VS_MAX_LOSS_PERCENT=5% loss ceiling. Hardware DUTs keep the
+#      original strict zero-loss / throughput-deviation checks
+#      unchanged — this path is gated strictly on `asic_type == 'vs'`.
+#   3. Added explicit Tx<=0 / Rx>Tx sanity guards ahead of the loss
+#      calculation, and per-flow Tx/Rx/loss logging on every run (not
+#      just on failure), so a stalled or double-counted flow cannot be
+#      silently misclassified as a pass.
+#   4. Changed the per-row assertion loop to collect all flow failures
+#      into a list and assert once at the end, so a failure on one flow
+#      no longer prevents later flows in the same run from being
+#      evaluated and logged.
+#   Validated against a sonic-vs DUT (x86_64-kvm_x86_64-r0): both flows
+#   at 0.00% loss across two independent runs. This VS-specific path is
+#   a functional smoke test only — it does not establish or claim
+#   40 Gbps / ASIC-equivalent throughput, buffering, or hardware PFC
+#   behavior; those remain the responsibility of physical-DUT test runs
+#   using the unmodified strict path.
+# =============================================================================
+diff --git a/ansible/config_sonic_basedon_testbed.yml b/ansible/config_sonic_basedon_testbed.yml
+index c3ee4bcbb..e45b6f7f9 100644
+--- a/ansible/config_sonic_basedon_testbed.yml
++++ b/ansible/config_sonic_basedon_testbed.yml
+@@ -339,6 +339,12 @@
+   - name: set is_tor_dut fact (aggregator dut_types contain the 'tor' substring but are NOT ToRs)
+     set_fact:
+       is_tor_dut: "{{ ('tor' in vm_topo_config['dut_type'] | lower) and ('aggregator' not in vm_topo_config['dut_type'] | lower) }}"
++    when: "'dut_type' in vm_topo_config"
++
++  - name: set is_tor_dut default for topos without dut_type (e.g. pure host_interfaces tgen/STC)
++    set_fact:
++      is_tor_dut: false
++    when: "'dut_type' not in vm_topo_config"
+ 
+   - name: find all enabled host_interfaces
+     set_fact:
+@@ -388,7 +394,7 @@
+   - name: enable tunnel_qos_remap for T1 in dualtor deployment
+     set_fact:
+       enable_tunnel_qos_remap: true
+-    when: "(('leafrouter' == (vm_topo_config['dut_type'] | lower)) or ('backendleafrouter' == (vm_topo_config['dut_type'] | lower))) and (hwsku in hwsku_list_dualtor_t1) and not (is_ixia_testbed or is_stc_testbed)"
++    when: "'dut_type' in vm_topo_config and (('leafrouter' == (vm_topo_config['dut_type'] | lower)) or ('backendleafrouter' == (vm_topo_config['dut_type'] | lower))) and (hwsku in hwsku_list_dualtor_t1) and not (is_ixia_testbed or is_stc_testbed)"
+ 
+   - name: gather hwsku that supports ComputeAI deployment
+     set_fact:
+@@ -411,7 +417,7 @@
+   - name: gather testbed VM information
+     testbed_vm_info: base_vm={{ testbed_facts['vm_base'] if 'vm_base' in testbed_facts else "" }} topo={{ testbed_facts['topo'] }} vm_file={{ vm_file }} servers_info={{ testbed_facts['servers'] | default({}) }}
+     delegate_to: localhost
+-    when: "(VM_topo | bool) and ('cable' not in topo)"
++    when: "(VM_topo | bool) and ('cable' not in topo) and 'vm' in vm_topo_config"
+ 
+   - name: find all vlan configurations for T0 topology
+     vlan_config:
+@@ -437,13 +443,13 @@
+     set_fact:
+       interface_to_vms: "{{ interface_to_vms|default([]) + [ {'name': item.key, 'ports': item.value['interface_indexes'][dut_index|int] }] }}"
+     with_dict: "{{ vm_topo_config['vm'] }}"
+-    when: "'cable' not in topo and not (is_bmc_topo | bool)"
++    when: "'cable' not in topo and not (is_bmc_topo | bool) and 'vm' in vm_topo_config"
+ 
+   - name: find all interface indexes connecting to VM
+     set_fact:
+       ifindex_to_vms: "{{ ifindex_to_vms|default([]) + item.value['interface_indexes'][dut_index|int] }}"
+     with_dict: "{{ vm_topo_config['vm'] }}"
+-    when: "'cable' not in topo and not (is_bmc_topo | bool)"
++    when: "'cable' not in topo and not (is_bmc_topo | bool) and 'vm' in vm_topo_config"
+ 
+   - name: find all interface names
+     set_fact:
+diff --git a/ansible/library/topo_facts.py b/ansible/library/topo_facts.py
+index 0ce43eaaa..14240a2bb 100644
+--- a/ansible/library/topo_facts.py
++++ b/ansible/library/topo_facts.py
+@@ -263,9 +263,9 @@ class ParseTestbedTopoinfo():
+     def get_topo_config(self, topo_name, hwsku, testbed_name, asics_present, card_type):
+         CLET_SUFFIX = "-clet"
+ 
+-        if 'ptf32' in topo_name:
++        if topo_name == 'ptf32':
+             topo_name = 't1'
+-        if 'ptf64' in topo_name:
++        if topo_name == 'ptf64':
+             topo_name = 't1-64'
+         topo_name = re.sub(CLET_SUFFIX + "$", "", topo_name)
+         topo_filename = VARS_PATH + 'topo_' + topo_name + '.yml'
+diff --git a/ansible/templates/minigraph_png.j2 b/ansible/templates/minigraph_png.j2
+index 254fa439d..474e0f42a 100644
+--- a/ansible/templates/minigraph_png.j2
++++ b/ansible/templates/minigraph_png.j2
+@@ -44,7 +44,7 @@
+ {% endfor %}
+ {% endif %}
+ {% endif %}
+-{% if vm_topo_config['host_interfaces_by_dut'][dut_index|int] | length > 0 %}
++{% if vm_topo_config['host_interfaces_by_dut'][dut_index|int] | length > 0 and (is_tor_dut | bool) %}
+ {% for host_index in range(vlan_intfs | length) %}
+       <DeviceLinkBase>
+         <ElementType>DeviceInterfaceLink</ElementType>
+diff --git a/ansible/templates/minigraph_template.j2 b/ansible/templates/minigraph_template.j2
+index be145dcba..62e7fefad 100644
+--- a/ansible/templates/minigraph_template.j2
++++ b/ansible/templates/minigraph_template.j2
+@@ -8,6 +8,7 @@
+ {% set neighbor_eosvm_mgmt = {} %}
+ {% else %}
+ {% set vms_number = vms | length %}
++{% set neighbor_eosvm_mgmt = neighbor_eosvm_mgmt | default({}) %}
+ {% endif %}
+ {% if not (is_bmc_topo | bool) and 'loopback' in vm_topo_config['DUT'] %}
+ {% if card_type is not defined or card_type != 'supervisor' %}
+diff --git a/tests/snappi_tests/test_snappi.py b/tests/snappi_tests/test_snappi.py
+index 7d9c62888..405193c21 100644
+--- a/tests/snappi_tests/test_snappi.py
++++ b/tests/snappi_tests/test_snappi.py
+@@ -1,3 +1,4 @@
++import logging
+ import time
+ import pytest
+ 
+@@ -5,7 +6,7 @@ from tests.common.helpers.assertions import pytest_assert, pytest_require
+ from tests.common.fixtures.conn_graph_facts import conn_graph_facts, \
+     fanout_graph_facts                  # noqa: F401
+ from tests.common.snappi_tests.snappi_fixtures import snappi_api_serv_ip, snappi_api_serv_port, \
+-    snappi_api, snappi_testbed_config   # noqa: F401
++    snappi_api, snappi_testbed_config, is_pfc_enabled   # noqa: F401
+ from tests.common.snappi_tests.snappi_helpers import wait_for_arp
+ from tests.common.snappi_tests.port import select_ports
+ from tests.common.snappi_tests.qos_fixtures import prio_dscp_map  # noqa: F401
+@@ -14,6 +15,15 @@ from tests.common.snappi_tests.snappi_fixtures import gen_data_flow_dest_ip
+ 
+ SNAPPI_POLL_DELAY_SEC = 2
+ 
++# sonic-vs has no ASIC and forwards purely in software, so it cannot be held to the
++# same lossless / line-rate expectations as real hardware. Offer a small fraction of
++# line rate and tolerate some loss instead, so the check still catches a broken
++# dataplane without requiring ASIC-grade throughput.
++VS_RATE_PERCENT = 5
++VS_MAX_LOSS_PERCENT = 5
++
++logger = logging.getLogger(__name__)
++
+ pytestmark = [pytest.mark.topology('snappi')]
+ 
+ 
+@@ -24,9 +34,11 @@ def __gen_all_to_all_traffic(testbed_config,
+                              conn_data,
+                              fanout_data,
+                              priority,
+-                             prio_dscp_map):        # noqa: F811
++                             prio_dscp_map,
++                             rate_percent=None):        # noqa: F811
+ 
+-    rate_percent = 100 / (len(port_config_list) - 1)
++    if rate_percent is None:
++        rate_percent = 100 / (len(port_config_list) - 1)
+     duration_sec = 2
+     pkt_size = 1024
+ 
+@@ -82,7 +94,8 @@ def __gen_all_to_all_traffic(testbed_config,
+     return testbed_config
+ 
+ 
+-def test_snappi(snappi_api,                     # noqa: F811
++def test_snappi(duthosts,
++                snappi_api,                     # noqa: F811
+                 snappi_testbed_config,          # noqa: F811
+                 conn_graph_facts,               # noqa: F811
+                 fanout_graph_facts,             # noqa: F811
+@@ -92,6 +105,7 @@ def test_snappi(snappi_api,                     # noqa: F811
+     Test if we can use Snappi API generate traffic in a testbed
+ 
+     Args:
++        duthosts (pytest fixture): list of DUTs
+         snappi_api (pytest fixture): Snappi session
+         snappi_testbed_config (pytest fixture): testbed configuration information
+         conn_graph_facts (pytest fixture): connection graph
+@@ -107,13 +121,19 @@ def test_snappi(snappi_api,                     # noqa: F811
+ 
+     pytest_require(len(port_config_list) >= 2, "This test requires at least 2 ports")
+ 
++    is_vs_dut = duthosts[dut_hostname].facts.get('asic_type') == 'vs'
++    if is_vs_dut:
++        logger.info("DUT asic_type=vs: offering %s%% line rate, tolerating up to %s%% loss",
++                    VS_RATE_PERCENT, VS_MAX_LOSS_PERCENT)
++
+     config = __gen_all_to_all_traffic(testbed_config=testbed_config,
+                                       port_config_list=port_config_list,
+                                       dut_hostname=dut_hostname,
+                                       conn_data=conn_graph_facts,
+                                       fanout_data=fanout_graph_facts,
+                                       priority=int(lossless_prio),
+-                                      prio_dscp_map=prio_dscp_map)
++                                      prio_dscp_map=prio_dscp_map,
++                                      rate_percent=VS_RATE_PERCENT if is_vs_dut else None)
+ 
+     pkt_size = config.flows[0].size.fixed
+     rate_percent = config.flows[0].rate.percentage
+@@ -172,14 +192,32 @@ def test_snappi(snappi_api,                     # noqa: F811
+     snappi_api.set_control_state(cs)
+ 
+     """ Analyze traffic results """
++    failures = []
+     for row in rows:
+         flow_name = row.name
+         rx_frames = row.frames_rx
+         tx_frames = row.frames_tx
+ 
+-        pytest_assert(rx_frames == tx_frames,
+-                      'packet losses for {} (Tx: {}, Rx: {})'.
+-                      format(flow_name, tx_frames, rx_frames))
++        if tx_frames <= 0:
++            failures.append('{}: no packets transmitted (Tx: {})'.format(flow_name, tx_frames))
++            continue
++        if rx_frames > tx_frames:
++            failures.append('{}: Rx ({}) exceeds Tx ({}), invalid counters'.format(flow_name, rx_frames, tx_frames))
++            continue
++
++        loss_percent = 100.0 * (tx_frames - rx_frames) / tx_frames
++        logger.info("Flow %s: Tx=%d Rx=%d loss=%.2f%%", flow_name, tx_frames, rx_frames, loss_percent)
++
++        if is_vs_dut:
++            if loss_percent > VS_MAX_LOSS_PERCENT:
++                failures.append(
++                    'Excessive packet loss for {} (Tx: {}, Rx: {}, loss: {:.2f}%, max allowed: {}%)'.
++                    format(flow_name, tx_frames, rx_frames, loss_percent, VS_MAX_LOSS_PERCENT))
++            continue
++
++        if rx_frames != tx_frames:
++            failures.append('packet losses for {} (Tx: {}, Rx: {})'.format(flow_name, tx_frames, rx_frames))
++            continue
+ 
+         tput_bps = port_speed_gbps * 1e9 * rate_percent / 100.0
+         exp_rx_frames = tput_bps * duration_sec / 8 / pkt_size
+@@ -188,6 +226,8 @@ def test_snappi(snappi_api,                     # noqa: F811
+         ratio = float(exp_rx_frames) / rx_frames
+         deviation = abs(ratio - 1)
+ 
+-        pytest_assert(deviation <= deviation_thresh,
+-                      'Expected / Actual # of pkts for flow {}: {} / {}'.
+-                      format(flow_name, exp_rx_frames, rx_frames))
++        if deviation > deviation_thresh:
++            failures.append('Expected / Actual # of pkts for flow {}: {} / {}'.
++                            format(flow_name, exp_rx_frames, rx_frames))
++
++    pytest_assert(not failures, '; '.join(failures))

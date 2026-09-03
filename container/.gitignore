@@ -1,0 +1,25 @@
+# Runtime files
+.run_snappi_test/
+clab-*/
+container/images/python/
+container/images/spirent_docker
+
+# Large binary/files
+*.tar.xz
+*.tar.gz
+*.tar
+*.tgz
+*.zip
+*.bk
+otgservice*
+./images/
+
+# ignore logs
+*.log
+./logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
