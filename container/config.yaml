@@ -62,16 +62,40 @@ dut:
   iface_speed: "40000"
   total_ports: 32                 # full front-panel port count of the platform (topology port range,
                                    # independent of how many ports are actually cabled below)
-  image: "vrnetlab/sonic_sonic-vs:202607"  # virtual mode only
+  image: "vrnetlab/sonic_sonic-vs:master"  # virtual mode only
   image_archive: ""                        # virtual mode only; empty = auto-detect sonic-vs-*.tar.gz under images.dir
   build_sonic_vs: true                     # (optional, default true) virtual mode only. If dut.image is not found in
-                                           # 'docker images' and no archive is found/configured, and dut.image is
-                                           # exactly "vrnetlab/sonic_sonic-vs:master", automatically build it by
-                                           # downloading the latest sonic-vs.img.gz from the master branch
-                                           # (https://sonic.software/) and running vrnetlab's build (guide §3.3).
-                                           # Only ever builds the "master" tag - it will never fabricate a
-                                           # version-specific tag (e.g. "202607") from the master build. Set to
-                                           # false to disable and always require a manually provided image/archive.
+                                           # 'docker images' and no archive is found/configured, and dut.image's
+                                           # repository is exactly "vrnetlab/sonic_sonic-vs", automatically build it
+                                           # by downloading sonic-vs.img.gz for dut.image's tag (e.g. "master" or a
+                                           # release branch like "202511") - see download_source below for where
+                                           # from - and running vrnetlab's build (guide §3.3). It always builds the
+                                           # tag dut.image asks for, never a different one (e.g. never fabricates
+                                           # "202511" from a master build). Fails with a clear error if that tag has
+                                           # no published sonic-vs.img.gz at the selected source. Set to false to
+                                           # disable and always require a manually provided image/archive. An image
+                                           # already present in 'docker images' is always used as-is and never
+                                           # subject to any of this - including custom/manually-built tags with no
+                                           # corresponding SONiC branch name.
+  download_source: auto                    # auto | azure | sonic.software
+                                           # auto: try Azure first, then fallback to sonic.software
+                                           # Only consulted when build_sonic_vs above actually needs to download and
+                                           # build an image that isn't already present locally - never applied to an
+                                           # existing local image, regardless of its tag.
+  keep_dut_artifacts: true                 # (optional, default true) virtual mode only. If build_sonic_vs built the
+                                           # sonic-vs image at least once, --destroy (and same-scope teardowns) will
+                                           # NOT remove the downloaded/built artifacts under images.dir/vrnetlab
+                                           # (the vrnetlab source checkout and the extracted sonic-vs-*.qcow2) - so
+                                           # the next build skips re-cloning/re-downloading. Set false to also
+                                           # remove them on destroy, forcing a fresh clone/download next time. Has
+                                           # no effect if build_sonic_vs never actually built the image.
+  keep_dut_image: true                     # (optional, default true) virtual mode only. If build_sonic_vs built the
+                                           # sonic-vs docker image at least once, --destroy (and same-scope
+                                           # teardowns) will NOT remove that built image (dut.image, e.g.
+                                           # vrnetlab/sonic_sonic-vs:master or vrnetlab/sonic_sonic-vs:202511) - so
+                                           # the next deploy skips rebuilding it. Set false to also remove it on
+                                           # destroy, forcing a rebuild next time. Has no effect if build_sonic_vs
+                                           # never actually built the image.
   credentials:
     user: admin
     password: admin

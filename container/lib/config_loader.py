@@ -110,6 +110,19 @@ def main():
     build_sonic_vs = cfg.get("dut", {}).get("build_sonic_vs", True)
     if not isinstance(build_sonic_vs, bool):
         err("dut.build_sonic_vs must be a boolean")
+    # Optional, default "auto" - kept out of require() so existing config.yaml
+    # files from before this option existed keep validating.
+    download_source = cfg.get("dut", {}).get("download_source", "auto")
+    if download_source not in ("auto", "azure", "sonic.software"):
+        err("dut.download_source must be 'auto', 'azure', or 'sonic.software'")
+    # Optional, both default to True - kept out of require() so existing
+    # config.yaml files from before these options existed keep validating.
+    keep_dut_artifacts = cfg.get("dut", {}).get("keep_dut_artifacts", True)
+    if not isinstance(keep_dut_artifacts, bool):
+        err("dut.keep_dut_artifacts must be a boolean")
+    keep_dut_image = cfg.get("dut", {}).get("keep_dut_image", True)
+    if not isinstance(keep_dut_image, bool):
+        err("dut.keep_dut_image must be a boolean")
 
     links = require(cfg, "dut.links", list)
     if isinstance(links, list):
@@ -255,6 +268,9 @@ def emit(cfg):
     scalar("CFG_DUT_IMAGE", get("dut.image"))
     scalar("CFG_DUT_IMAGE_ARCHIVE", get("dut.image_archive"))
     scalar("CFG_DUT_BUILD_SONIC_VS", "1" if get("dut.build_sonic_vs", True) else "0")
+    scalar("CFG_DUT_DOWNLOAD_SOURCE", get("dut.download_source", "auto"))
+    scalar("CFG_DUT_KEEP_ARTIFACTS", "1" if get("dut.keep_dut_artifacts", True) else "0")
+    scalar("CFG_DUT_KEEP_IMAGE", "1" if get("dut.keep_dut_image", True) else "0")
     scalar("CFG_DUT_USER", get("dut.credentials.user"))
     scalar("CFG_DUT_PASSWORD", get("dut.credentials.password"))
 

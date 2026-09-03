@@ -197,12 +197,12 @@ phase_check_artifacts() {
         else
             SONIC_VS_ARCHIVE=$(_find_exact_artifact "" "sonic-vs-*.tar.gz sonic-vs-*.gz" true); rc=$?
             if [[ $rc -ne 0 ]]; then
-                if [[ "$CFG_DUT_BUILD_SONIC_VS" == "1" && "$CFG_DUT_IMAGE" == "vrnetlab/sonic_sonic-vs:master" ]]; then
+                if [[ "$CFG_DUT_BUILD_SONIC_VS" == "1" && "$CFG_DUT_IMAGE" == vrnetlab/sonic_sonic-vs:* ]]; then
                     _build_sonic_vs_image
                 elif [[ "$CFG_DUT_BUILD_SONIC_VS" == "1" ]]; then
-                    die "Configured image ${CFG_DUT_IMAGE} is not available locally, and dut.build_sonic_vs only supports building vrnetlab/sonic_sonic-vs:master. Set dut.image to vrnetlab/sonic_sonic-vs:master to use the automatic build, or place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive)."
+                    die "Configured image ${CFG_DUT_IMAGE} is not available locally, and dut.build_sonic_vs only supports building vrnetlab/sonic_sonic-vs:<tag> images. Set dut.image to vrnetlab/sonic_sonic-vs:<tag> to use the automatic build, or place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive)."
                 else
-                    die "sonic-vs image ${CFG_DUT_IMAGE} is not in 'docker images' and no sonic-vs-*.tar.gz archive was found under $IMAGES_DIR. Set dut.image_archive in config.yaml, place a matching archive under images.dir, set dut.build_sonic_vs: true (only builds the 'master' tag), or load/tag the image manually."
+                    die "sonic-vs image ${CFG_DUT_IMAGE} is not in 'docker images' and no sonic-vs-*.tar.gz archive was found under $IMAGES_DIR. Set dut.image_archive in config.yaml, place a matching archive under images.dir, set dut.build_sonic_vs: true, or load/tag the image manually."
                 fi
             fi
         fi
@@ -211,14 +211,15 @@ phase_check_artifacts() {
     log_ok "Artifacts validated: stc=$(basename "${STC_IMAGE_FILE:-<docker images>}") labserver=$(basename "${LABSERVER_IMAGE_FILE:-<existing>}")${OTGSERVICE_FILE:+ otgservice=$(basename "$OTGSERVICE_FILE")}"
 }
 
-# Builds the sonic-vs docker image per guide §3.3: downloads the latest
-# master-branch sonic-vs.img.gz from https://sonic.software/ and runs
-# vrnetlab's build. This is purely a convenience for the guide's manual flow
-# when the image is missing - it only ever produces
-# vrnetlab/sonic_sonic-vs:master (the caller above already checked
-# CFG_DUT_IMAGE is exactly that before calling this); a user-pinned
-# version-specific tag is never auto-built, to avoid a docker tag silently
-# claiming a version whose actual content came from a master build instead.
+# Builds the sonic-vs docker image per guide §3.3: downloads sonic-vs.img.gz
+# for the branch matching CFG_DUT_IMAGE's tag from https://sonic.software/
+# and runs vrnetlab's build. The resulting docker tag comes from vrnetlab's
+# own Makefile (it derives VERSION from the sonic-vs-<tag>.qcow2 filename it
+# finds via IMAGE_GLOB, not from anything this script tells it), so naming
+# the extracted file sonic-vs-<tag>.qcow2 is what makes it land as
+# vrnetlab/sonic_sonic-vs:<tag> - this only works for tags sonic.software
+# actually publishes a sonic-vs.img.gz build for (master and recent releases;
+# see the die message below if a given tag has none).
 _build_sonic_vs_image() {
     log_step "dut.image (${CFG_DUT_IMAGE}) not found locally - building it per guide §3.3 (dut.build_sonic_vs=true)"
     local log="$LOG_DIR/sonic_vs_build.log"
@@ -230,33 +231,161 @@ _build_sonic_vs_image() {
 _build_sonic_vs_image_impl() {
     local vrnetlab_dir="$IMAGES_DIR/vrnetlab"
     local sonic_dir="$vrnetlab_dir/sonic"
+    local tag="${CFG_DUT_IMAGE##*:}"
 
     _ensure_vrnetlab_repo "$vrnetlab_dir"
     [[ -d "$sonic_dir" ]] || die "vrnetlab checkout at $vrnetlab_dir has no 'sonic' subdirectory - the upstream repository layout may have changed (expected https://github.com/srl-labs/vrnetlab/tree/master/sonic)."
 
-    log_info "Fetching build index from https://sonic.software/builds.json"
-    local builds_json url
-    builds_json="$(curl -fsSL --max-time 30 https://sonic.software/builds.json)" \
-        || die "Failed to fetch https://sonic.software/builds.json - check network access, or build/tag ${CFG_DUT_IMAGE} manually."
-    url="$(printf '%s' "$builds_json" | jq -r '.master["sonic-vs.img.gz"].url // empty')"
-    [[ -n "$url" ]] || die "No successful sonic-vs.img.gz build found for the 'master' branch in https://sonic.software/builds.json."
+    if [[ -f "$sonic_dir/sonic-vs-$tag.qcow2" ]]; then
+        # dut.keep_dut_artifacts=true kept this from a previous build - reuse
+        # it instead of re-downloading ~1GB. A qcow2 only ever exists here
+        # once gunzip+mv below have both fully succeeded, so its presence is
+        # itself proof it isn't a stray/incomplete leftover.
+        log_info "Reusing previously extracted $sonic_dir/sonic-vs-$tag.qcow2 (dut.keep_dut_artifacts=true) - skipping download"
+    else
+        # vrnetlab's Makefile builds every *.qcow2 it finds in this directory, so
+        # a stray file left over from an earlier interrupted attempt must not
+        # still be sitting here.
+        rm -f "$sonic_dir"/*.qcow2 "$sonic_dir"/*.img "$sonic_dir"/*.img.gz
 
-    # vrnetlab's Makefile builds every *.qcow2 it finds in this directory, so
-    # a stray file left over from an earlier interrupted attempt must not
-    # still be sitting here.
-    rm -f "$sonic_dir"/*.qcow2 "$sonic_dir"/*.img "$sonic_dir"/*.img.gz
+        _fetch_sonic_vs_img_gz "$tag" "$sonic_dir/sonic-vs-$tag.img.gz"
 
-    log_info "Downloading sonic-vs.img.gz (master branch) from $url"
-    curl -fL --retry 3 --retry-delay 5 -o "$sonic_dir/sonic-vs-master.img.gz" "$url" \
-        || die "Download of sonic-vs.img.gz failed."
+        log_info "Extracting sonic-vs.img.gz"
+        gunzip -f "$sonic_dir/sonic-vs-$tag.img.gz" || die "gunzip of the downloaded sonic-vs.img.gz failed."
+        mv "$sonic_dir/sonic-vs-$tag.img" "$sonic_dir/sonic-vs-$tag.qcow2"
+    fi
 
-    log_info "Extracting and building the sonic-vs docker image (vrnetlab's 'make')"
-    gunzip -f "$sonic_dir/sonic-vs-master.img.gz" || die "gunzip of the downloaded sonic-vs.img.gz failed."
-    mv "$sonic_dir/sonic-vs-master.img" "$sonic_dir/sonic-vs-master.qcow2"
+    log_info "Building the sonic-vs docker image (vrnetlab's 'make')"
     ( cd "$sonic_dir" && make ) || die "vrnetlab 'make' failed building sonic-vs - see log above."
 
     docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "${CFG_DUT_IMAGE}" \
-        || die "'make' completed but ${CFG_DUT_IMAGE} still isn't in 'docker images' - the vrnetlab sonic/Makefile layout may have changed upstream."
+        || die "'make' completed but ${CFG_DUT_IMAGE} still isn't in 'docker images' - the vrnetlab sonic/Makefile layout may have changed upstream, or its derived tag doesn't match '$tag'."
+
+    # Tracks that THIS tool actually built the image, so --destroy only ever
+    # considers removing it when dut.keep_dut_image=false (never a
+    # manually-provided/pulled image it didn't create) - see phase_destroy.
+    state_set "$STATE_FILE" OWN_DUT_IMAGE 1
+}
+
+# Downloads sonic-vs.img.gz for $tag into $dest_file, per dut.download_source
+# (CFG_DUT_DOWNLOAD_SOURCE). Only ever called once _build_sonic_vs_image_impl
+# has already established the image isn't present locally and no cached
+# qcow2/archive covers it - branch/tag lookups never run before that.
+_fetch_sonic_vs_img_gz() {
+    local tag="$1" dest_file="$2"
+    case "$CFG_DUT_DOWNLOAD_SOURCE" in
+        sonic.software)
+            _download_sonic_vs_from_sonic_software "$tag" "$dest_file" \
+                || die "Download of sonic-vs.img.gz for tag '$tag' from sonic.software failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+            ;;
+        azure)
+            _download_sonic_vs_from_azure "$tag" "$dest_file" \
+                || die "Download of sonic-vs.img.gz for tag '$tag' from Azure Pipelines failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+            ;;
+        auto)
+            if _download_sonic_vs_from_azure "$tag" "$dest_file"; then
+                return 0
+            fi
+            log_info "Azure download failed for tag '$tag' - falling back to sonic.software (dut.download_source=auto)"
+            _download_sonic_vs_from_sonic_software "$tag" "$dest_file" \
+                || die "Download of sonic-vs.img.gz for tag '$tag' failed from both Azure Pipelines and sonic.software - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+            ;;
+        *)
+            die "Unknown dut.download_source '${CFG_DUT_DOWNLOAD_SOURCE}' - must be 'auto', 'azure', or 'sonic.software'."
+            ;;
+    esac
+}
+
+# Downloads sonic-vs.img.gz for $tag from https://sonic.software/ into
+# $dest_file (guide §3.3). Reports failure via return code rather than
+# die() so 'auto' mode can fall back to the other source instead of aborting.
+_download_sonic_vs_from_sonic_software() {
+    local tag="$1" dest_file="$2"
+    log_info "Fetching build index from https://sonic.software/builds.json"
+    local builds_json url
+    builds_json="$(curl -fsSL --max-time 30 https://sonic.software/builds.json)" || {
+        log_info "Failed to fetch https://sonic.software/builds.json - check network access."
+        return 1
+    }
+    url="$(printf '%s' "$builds_json" | jq -r --arg tag "$tag" '.[$tag]["sonic-vs.img.gz"].url // empty')"
+    if [[ -z "$url" ]]; then
+        log_info "No successful sonic-vs.img.gz build found for tag '$tag' in https://sonic.software/builds.json."
+        return 1
+    fi
+
+    log_info "Downloading sonic-vs.img.gz ('$tag') from $url"
+    curl -fL --retry 3 --retry-delay 5 -o "$dest_file" "$url" || {
+        log_info "Download of sonic-vs.img.gz from sonic.software failed."
+        return 1
+    }
+}
+
+# Downloads sonic-vs.img.gz for $tag from the Azure Pipelines "vs" build
+# (pipeline 142 on https://sonic-build.azurewebsites.net/, guide §3.3) into
+# $dest_file, reproducing the manual browser steps:
+#   1. GET .../ui/sonic/pipelines/142/builds?branchName=<tag> - a plain
+#      server-rendered HTML table (no JS) - and take the BuildId of the
+#      newest row with Result=succeeded ("choose the latest build that has
+#      succeeded").
+#   2. GET .../api/sonic/artifacts?...&BuildId=<id> - this 302s to a signed
+#      artprodcus3.artifacts.visualstudio.com "content?format=zip" URL; this
+#      is what clicking that build's single "sonic-buildimage.vs" artifact
+#      resolves to.
+#   3. Swap that URL's query for format=file&subPath=/target/sonic-vs.img.gz
+#      to fetch just that one file (this is what clicking "target/sonic-vs.img.gz"
+#      inside the artifact does) instead of the full multi-GB artifact zip.
+# Reports failure via return code rather than die() so 'auto' mode can fall
+# back to sonic.software instead of aborting.
+_download_sonic_vs_from_azure() {
+    local tag="$1" dest_file="$2"
+    local definition_id=142
+    local artifact_name="sonic-buildimage.vs"
+
+    log_info "Looking up the latest succeeded Azure Pipelines build for branch '$tag' (pipeline $definition_id)"
+    local builds_html build_id
+    builds_html="$(curl -fsSL --max-time 30 -G "https://sonic-build.azurewebsites.net/ui/sonic/pipelines/${definition_id}/builds" \
+        --data-urlencode "branchName=${tag}")" || {
+        log_info "Failed to fetch the Azure Pipelines build list for branch '$tag' - check network access."
+        return 1
+    }
+    # Simple <tr>/<td> regex scrape - the page is a plain, non-nested HTML
+    # table (see the raw response), not JS-rendered like sonic.software's UI.
+    build_id="$(printf '%s' "$builds_html" | python3 -c '
+import re, sys
+html = sys.stdin.read()
+for row in re.findall(r"<tr>(.*?)</tr>", html, re.S):
+    cells = re.findall(r"<td>(.*?)</td>", row, re.S)
+    if len(cells) >= 5 and cells[4].strip() == "succeeded":
+        print(cells[0].strip())
+        break
+')"
+    if [[ -z "$build_id" ]]; then
+        log_info "No succeeded Azure Pipelines build found for branch '$tag' (pipeline $definition_id)."
+        return 1
+    fi
+    log_info "Using Azure Pipelines build $build_id for branch '$tag'"
+
+    local headers artifact_url
+    headers="$(curl -fsS --max-time 30 -D - -o /dev/null -G "https://sonic-build.azurewebsites.net/api/sonic/artifacts" \
+        --data-urlencode "branchName=${tag}" \
+        --data-urlencode "artifactName=${artifact_name}" \
+        --data-urlencode "definitionId=${definition_id}" \
+        --data-urlencode "BuildId=${build_id}")" || {
+        log_info "Failed to resolve the Azure '${artifact_name}' artifact for build $build_id."
+        return 1
+    }
+    artifact_url="$(printf '%s' "$headers" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | tail -1)"
+    if [[ -z "$artifact_url" ]]; then
+        log_info "Azure artifact lookup for build $build_id did not return a download location."
+        return 1
+    fi
+
+    local file_url="${artifact_url%%\?*}?format=file&subPath=%2Ftarget%2Fsonic-vs.img.gz"
+    log_info "Downloading sonic-vs.img.gz ('$tag') from Azure Pipelines build $build_id"
+    curl -fL --retry 3 --retry-delay 5 -o "$dest_file" "$file_url" || {
+        log_info "Download of sonic-vs.img.gz from Azure Pipelines build $build_id failed."
+        return 1
+    }
 }
 
 # Clones vrnetlab into the images cache on first use, reused as-is on later
@@ -273,6 +402,11 @@ _ensure_vrnetlab_repo() {
     log_info "Cloning vrnetlab (https://github.com/srl-labs/vrnetlab) into $dir"
     _git_net clone --quiet https://github.com/srl-labs/vrnetlab "$dir" \
         || die "git clone of https://github.com/srl-labs/vrnetlab failed or timed out after 60s - check network access."
+
+    # Tracks that THIS tool actually created this checkout, so --destroy only
+    # ever considers removing it when dut.keep_dut_artifacts=false - see
+    # phase_destroy.
+    state_set "$STATE_FILE" OWN_DUT_ARTIFACTS 1
 }
 
 # _extract_stc_tgz_from_zip <zip_path>

@@ -734,5 +734,33 @@ phase_destroy() {
         log_info "sonic-mgmt source not tool-owned (user-supplied) - skipping"
     fi
 
+    # dut.build_sonic_vs's build output. Only ever touched here if THIS tool
+    # actually built it (OWN_DUT_IMAGE/OWN_DUT_ARTIFACTS) - a manually
+    # provided/pulled dut.image or a user's own vrnetlab checkout is never
+    # tool-owned and is left alone regardless of these settings.
+    if state_owns "$STATE_FILE" OWN_DUT_IMAGE; then
+        if [[ "$CFG_DUT_KEEP_IMAGE" == "1" ]]; then
+            log_info "dut.keep_dut_image=true - keeping built sonic-vs image ($CFG_DUT_IMAGE)"
+        else
+            log_info "Removing built sonic-vs image ($CFG_DUT_IMAGE)"
+            docker rmi "$CFG_DUT_IMAGE" >/dev/null 2>&1 || true
+            state_set "$STATE_FILE" OWN_DUT_IMAGE 0
+        fi
+    else
+        log_info "sonic-vs image not tool-built - skipping"
+    fi
+
+    if state_owns "$STATE_FILE" OWN_DUT_ARTIFACTS; then
+        if [[ "$CFG_DUT_KEEP_ARTIFACTS" == "1" ]]; then
+            log_info "dut.keep_dut_artifacts=true - keeping vrnetlab source/build artifacts ($IMAGES_DIR/vrnetlab)"
+        else
+            log_info "Removing vrnetlab source/build artifacts ($IMAGES_DIR/vrnetlab)"
+            rm -rf "$IMAGES_DIR/vrnetlab"
+            state_set "$STATE_FILE" OWN_DUT_ARTIFACTS 0
+        fi
+    else
+        log_info "vrnetlab source/build artifacts not tool-downloaded - skipping"
+    fi
+
     log_ok "Teardown complete (tool-owned resources only)"
 }

@@ -37,6 +37,46 @@ log_cmd() { log_info "\$ $(redact "$*")"; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# --- docker wrapper: transparently falls back to 'sudo docker' -------------
+# If this shell's docker group membership isn't active yet (e.g. the user
+# was just added to the docker group and hasn't started a fresh login
+# session), talking to /var/run/docker.sock fails with "permission denied"
+# even though `id`/`groups` show the docker group. Every docker call in this
+# tool goes through this function so the fallback applies everywhere without
+# editing every call site.
+DOCKER_SUDO=""
+docker() {
+    if [[ -n "$DOCKER_SUDO" ]]; then
+        sudo docker "$@"
+    else
+        command docker "$@"
+    fi
+}
+
+# Detects the permission-denied case above and, if found, primes 'sudo
+# docker' for the rest of this run. Must be called in the foreground, before
+# any phase that backgrounds docker calls via run_phase_with_spinner - a
+# sudo password prompt there would be hidden behind the spinner and look
+# like a hang.
+docker_bootstrap_sudo() {
+    require_cmd docker || return 0
+    docker info >/dev/null 2>&1 && return 0
+    log_warn "docker is installed but this shell can't reach the daemon without sudo (docker group membership not active in this login session?) - falling back to 'sudo docker' for the rest of this run"
+    sudo docker info >/dev/null 2>&1 \
+        || die "docker is unreachable even with sudo. Check that the docker service is running (systemctl status docker) and that sudo works for this user."
+    DOCKER_SUDO="sudo"
+
+    # Keep sudo's cached credential alive for the rest of this (possibly
+    # long-running) script. Without this, sudo's timestamp (~15 min by
+    # default) can expire during a docker-quiet phase (ansible/pytest), and
+    # the next docker call - often one backgrounded under
+    # run_phase_with_spinner, where a password prompt is invisible - would
+    # re-prompt and look like a hang. Killed on exit in run_snappi_test.sh.
+    ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 60; done ) &
+    SUDO_KEEPALIVE_PID=$!
+    disown "$SUDO_KEEPALIVE_PID" 2>/dev/null
+}
+
 # Resolves which Compose invocation to use - prefers the "docker compose"
 # plugin (what env_check.sh installs by default), falls back to legacy
 # standalone docker-compose. Dies with a clear message if neither exists,

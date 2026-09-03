@@ -79,7 +79,9 @@ flowchart LR
 
 Everything above can be stood up on a single Linux host, including a single
 WSL2 instance on Windows — this script detects WSL and applies the one extra
-step it needs (`mount --make-rshared /`) automatically.
+step it needs (`mount --make-rshared /`) automatically. Steps like this may
+prompt for your sudo password — see [§2](#2-prerequisites) ("Sudo Password
+Prompts") for details.
 
 The OTG API Docker and Labserver can be deployed either as two independent
 containers (`deployment.mode: standalone`) or together as one Docker Compose
@@ -93,6 +95,42 @@ and [§7.6](#7-what-each-phase-does). Either way, the relationship shown above
 
 **Host:** a Linux machine (or WSL2 instance) with `sudo`/root access and
 outbound network reachability to GitHub and your package mirrors.
+
+**Important: Run Docker Without `sudo`**
+
+Membership in the `docker` group is required before running the automation.
+
+While some script-managed Docker CLI operations can be executed with elevated privileges, not all Docker interactions can be intercepted or wrapped by the script. In particular:
+
+- The sonic-vs image build process invokes `docker` commands from within the upstream `vrnetlab` Makefiles. These commands execute in separate shell processes and do not inherit the script's Docker wrapper logic.
+- `containerlab` communicates directly with the Docker Engine through the Docker API/socket rather than invoking the Docker CLI, so it cannot be transparently redirected through `sudo docker`.
+
+As a result, users without access to the Docker daemon (typically provided through membership in the `docker` group) may encounter permission errors during image build, deployment, or test execution.
+
+To avoid these issues, add your user account to the `docker` group:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Then log out and log back in, run `newgrp docker`, or restart the WSL
+session (`wsl --shutdown`) for the change to take effect. Afterward, Docker
+commands can be executed directly without `sudo`.
+
+**Sudo Password Prompts**
+
+On Ubuntu 24.04 (including WSL), certain setup operations require elevated
+privileges and may prompt for a sudo password during environment
+preparation. This is expected behavior and may occur when the script
+performs system-level configuration steps (for example, mount propagation
+configuration required by containerlab).
+
+Users should ensure their account has sudo privileges before running the
+automation.
+
+If a fully unattended execution is required, advanced users may optionally
+configure passwordless sudo (`NOPASSWD`) for the specific commands required
+by their environment, subject to their organization's security policies.
 
 **Software:** none of it needs to be pre-installed — phase 1
 (`phase_env_check`) installs whatever is missing: `git`, `sshpass`, `curl`,
@@ -150,13 +188,18 @@ configured version, remove it yourself first (`docker rm -f labserver`, or
 `testcenter.version` itself, which [§7.0](#7-what-each-phase-does)'s
 version-change check will do for you automatically by default.
 
-**Virtual DUT (optional):** if `dut.mode: virtual`, either have the
+**Virtual DUT:** if `dut.mode: virtual`, either have the
 `sonic-vs` image already tagged in `docker images`, or place a
 `sonic-vs-*.tar.gz`/`.gz` archive under `images.dir` (or set
-`dut.image_archive` explicitly). If none of those apply and `dut.image` is
-exactly `vrnetlab/sonic_sonic-vs:master`, the script builds it for you
-automatically (guide §3.3) unless `dut.build_sonic_vs` is set to `false` -
-see §6 below. Skip this entirely for `dut.mode: physical`.
+`dut.image_archive` explicitly). An image already in `docker images` is
+always used as-is - even a custom/manually-built tag with no corresponding
+SONiC branch name. If none of those apply and `dut.image`'s repository is
+`vrnetlab/sonic_sonic-vs` (any tag - `master` or a release branch like
+`202511`), the script downloads and builds it for you automatically (guide
+§3.3) unless `dut.build_sonic_vs` is set to `false` - see §6 below.
+`dut.download_source` (default `auto`) controls where the download comes
+from: Azure Pipelines, sonic.software, or Azure with a sonic.software
+fallback. Skip this entirely for `dut.mode: physical`.
 
 **sonic-mgmt source:** leave `sonic_mgmt.source_dir` empty to let the script
 clone and manage its own checkout, or point it at an existing checkout (e.g.
@@ -330,7 +373,8 @@ and OTG service are deployed.
 | `hostname`, `mgmt_ip`, `hwsku`, `iface_speed` | DUT identity, matched against the Ansible inventory/topology. |
 | `total_ports` | Full front-panel port count of the platform (topology port range) — independent of how many ports are actually cabled. |
 | `image`, `image_archive` | Virtual mode only: the `sonic-vs` image tag, and optionally an explicit archive path (empty = auto-detect under `images.dir`). |
-| `build_sonic_vs` | (optional, default `true`) Virtual mode only. If `image` is not found in `docker images` and no archive is found/configured, and `image` is exactly `vrnetlab/sonic_sonic-vs:master`, automatically build it (guide §3.3: download the latest master-branch `sonic-vs.img.gz` from sonic.software and run vrnetlab's build). Never auto-builds a version-pinned tag (e.g. `202607`) - set to `false` to always require a manually provided image/archive. |
+| `build_sonic_vs` | (optional, default `true`) Virtual mode only. If `image` is not found in `docker images` and no archive is found/configured, and `image`'s repository is exactly `vrnetlab/sonic_sonic-vs`, automatically build it (guide §3.3: download `sonic-vs.img.gz` for `image`'s tag per `download_source` below and run vrnetlab's build). Always builds the tag `image` actually asks for (`master` or a release branch like `202511`) - never fabricates one tag's content from another's build. Fails with a clear error if the selected source(s) have no published `sonic-vs.img.gz` for that tag - set to `false` to always require a manually provided image/archive. **An image already present in `docker images` is always used as-is** - including a custom/manually-built tag with no corresponding SONiC branch name - so none of this (or `download_source` below) is ever consulted for it. |
+| `download_source` | (optional, default `auto`) Virtual mode only; only consulted when `build_sonic_vs` above actually needs to download+build (never for an already-local image). `auto` - try Azure Pipelines first, fall back to sonic.software if Azure has no successful build for that tag (or is unreachable). `azure` - Azure Pipelines only (`sonic-build.azurewebsites.net`, pipeline 142). `sonic.software` - sonic.software only. See guide §3.3. |
 | `credentials.user` / `.password` | DUT login used for SSH key bootstrap and Ansible. |
 | `links[]` | One entry per DUT↔STC cable: `dut_port`, `stc_port`, `bandwidth`, `vlan_id`, and (physical mode only) `host_interface` — the host NIC cabled to that STC port. **At least 2 links are required** for the all-to-all smoke test. |
 
@@ -423,11 +467,16 @@ image, checks — in order — whether it's already usable (image already in
 reachable) before requiring a matching file under `images.dir`. Matching is
 exact-filename-first; a glob fallback exists purely to produce a clear
 zero-match/ambiguous-match error, never to silently substitute a "close
-enough" file. For `sonic-vs` specifically, if nothing above applies and
-`dut.image` is exactly `vrnetlab/sonic_sonic-vs:master`, `dut.build_sonic_vs`
-(default `true`) triggers an automatic build here instead of failing —
-downloading the latest master-branch `sonic-vs.img.gz` and running vrnetlab's
-build (guide §3.3); a version-pinned tag is never auto-built this way.
+enough" file. For `sonic-vs` specifically, an image already present in `docker images` is
+always used as-is — even a custom/manually-built tag with no corresponding
+SONiC branch name — and none of the branch/tag lookup below ever runs for
+it. Only if nothing above applies and `dut.image`'s repository is
+`vrnetlab/sonic_sonic-vs` (any tag), `dut.build_sonic_vs` (default `true`)
+triggers an automatic build here instead of failing — downloading
+`sonic-vs.img.gz` for that tag per `dut.download_source` (default `auto`:
+Azure Pipelines, falling back to sonic.software) and running vrnetlab's
+build (guide §3.3); it always builds the exact tag configured, failing
+clearly if the selected source(s) have no published build for it.
 
 ### 7.3 sonic-mgmt source (`lib/sonic_mgmt.sh::phase_sonic_mgmt_source`)
 - **User-supplied checkout** (`sonic_mgmt.source_dir` set): never checked
@@ -664,6 +713,7 @@ the Allure report URL for that run.
 | `A container named 'labserver'/'otg' already exists but is not part of this tool's docker-compose stack` | `deployment.mode: docker-compose`, but a same-named container already exists from `standalone` mode or a manual run. | Remove it (`docker rm -f labserver`/`otg`), or `--destroy` under whichever mode created it, then re-run. |
 | `otg-compose.yaml under ... does not define a 'labserver'/'otg' service` or `is missing expected file` | The `testcenter-otg-setup` checkout this container solution ships inside (one directory above `container/`) doesn't match the layout this integration expects (e.g. it's been edited or an upstream repo change altered it). | Restore that checkout to a known-good `testcenter-otg-setup` layout (matching guide §3.5). |
 | `Deploying/verifying lab services` spinner runs for minutes with no progress | Not caused by the docker-compose stack anymore — it no longer does any network git operation. Check `deploy_services.log` for what's actually running (e.g. `docker compose ... --build` pulling a base image / installing packages can take a while on a slow link — this is normal progress, not a hang, just not reflected in the spinner text). |
+| `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, or an artifact/image reported missing that's clearly in `docker images` | This shell's `docker` group membership isn't active (common right after the user was added to the group without a fresh login) — `docker_bootstrap_sudo` (`lib/common.sh`) detects this and falls back to `sudo docker` for the rest of the run, priming it once up front so later calls don't silently hang waiting on a password. If it still blocks, `sudo` itself is failing (misconfigured `sudoers`, or a password is required and nobody is watching the terminal). | Enter the `sudo` password when prompted at the start of the run, or avoid the prompt entirely by fixing the underlying group membership — see [§2](#2-prerequisites). |
 
 If clearing the cache doesn't resolve an issue, `--destroy` and re-run —
 this discards only tool-owned state, never a physical DUT or externally

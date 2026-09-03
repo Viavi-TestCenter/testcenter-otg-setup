@@ -104,13 +104,21 @@ if [[ "$MODE" == "show-config" ]]; then
     exit 0
 fi
 
+# Foreground and before anything backgrounds docker calls (run_phase_with_spinner) -
+# see docker_bootstrap_sudo in lib/common.sh.
+docker_bootstrap_sudo
+
 LOG_DIR="$LOG_BASE_DIR/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
 RUN_LOG="$LOG_DIR/run.log"
 
 state_file_init "$STATE_FILE"
 acquire_lock "$LOCK_FILE"
-trap release_lock EXIT
+_on_exit() {
+    release_lock
+    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+}
+trap _on_exit EXIT
 
 log_info "run_snappi_test.sh starting - mode=$MODE config=$CONFIG_FILE log_dir=$LOG_DIR"
 

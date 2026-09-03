@@ -140,11 +140,17 @@ docker load -i stc_5.62.0766.tgz
 
 **Build the sonic-vs image** *(skip if testing against real hardware)*:
 
-> **Automated:** if `dut.image` is set to exactly `vrnetlab/sonic_sonic-vs:master` and it isn't already present in `docker images` (and no archive is configured/found under `images.dir`), `run_snappi_test.sh` does the steps below for you automatically, as long as `dut.build_sonic_vs` (default `true`) is not set to `false`. It only ever builds the `master` tag - a version-pinned tag (e.g. `202607`) is never auto-built, so a manual build is still required for those. See `dut.build_sonic_vs` in [config.yaml](config.yaml) / [§6](README.md#6-configyaml-reference).
+> **Automated:** if `dut.image`'s repository is exactly `vrnetlab/sonic_sonic-vs` (any tag - `master` or a release branch like `202511`) and it isn't already present in `docker images` (and no archive is configured/found under `images.dir`), `run_snappi_test.sh` does the steps below for you automatically, as long as `dut.build_sonic_vs` (default `true`) is not set to `false`. It always builds the exact tag `dut.image` asks for, never a different one (e.g. never fabricates `202511` from a `master` build). Where `sonic-vs.img.gz` is downloaded from is controlled by `dut.download_source` (default `auto`: try Azure Pipelines first, fall back to sonic.software if Azure has no successful build for that tag). Fails with a clear error if the selected source(s) have no published build for it. **None of this branch/tag lookup ever runs for an image already present in `docker images`** - including a custom/manually-built or manually-imported tag with no corresponding SONiC branch name, which is always used as-is. See `dut.build_sonic_vs` / `dut.download_source` in [config.yaml](config.yaml) / [§6](README.md#6-configyaml-reference).
 
-1. Download `sonic-vs.img.gz` for the desired branch:
-   - https://sonic.software/ (pick a branch, e.g. `master`) - the page itself is JS-rendered, but it's populated from the static `https://sonic.software/builds.json` (e.g. `.master["sonic-vs.img.gz"].url`), which is what the automation above parses directly, or
-   - https://sonic-build.azurewebsites.net/ui/sonic/pipelines/142/builds?branchName=master
+1. Download `sonic-vs.img.gz` for the desired branch. `dut.download_source` picks which of these the automation above uses (`auto` tries the first and falls back to the second):
+   - **Azure Pipelines** (`sonic-build.azurewebsites.net`, pipeline 142 - the default source):
+     1. Open https://sonic-build.azurewebsites.net/ui/sonic/Pipelines and scroll all the way to the bottom, where the `vs` platform is listed.
+     2. Pick the branch/tag you want to use (e.g. `master`) and click its "Build History".
+     3. On the build history page, choose the latest build with `Result` = `succeeded` and click its "Artifacts" link.
+     4. In the new window there's a single artifact listed (`sonic-buildimage.vs`) - click it.
+     5. Scroll all the way down (or Ctrl+F) until you see `target/sonic-vs.img.gz`, then click it to start the download or copy the download link.
+     (Equivalent direct URL for a given branch: https://sonic-build.azurewebsites.net/ui/sonic/pipelines/142/builds?branchName=master)
+   - **sonic.software** (https://sonic.software/, pick a branch, e.g. `master`) - the page itself is JS-rendered, but it's populated from the static `https://sonic.software/builds.json` (e.g. `.master["sonic-vs.img.gz"].url`), which is what the automation above parses directly when using this source.
 2. Build the container image following [vrnetlab's sonic-vs guide](https://github.com/srl-labs/vrnetlab/blob/master/sonic/README.md):
    ```bash
    gunzip sonic-vs-<version>.img.gz
@@ -178,7 +184,7 @@ topology:
 
     sonic-s6100-dut1:
       kind: sonic-vm
-      image: vrnetlab/sonic_sonic-vs:202607
+      image: vrnetlab/sonic_sonic-vs:202511
       mgmt-ipv4: 192.168.1.3
       env:
         USERNAME: admin
@@ -231,7 +237,7 @@ The Labserver manages STC chassis port reservation and resource allocation. It c
 
 ### 3.5 Deploy the OTG Service
 
-Follow [VIAVI's OTG setup guide](./VIAVI_TestCenter_OTG_API_Support_Overview.md). Two deployment styles are supported, matching the two Labserver options in §3.4:
+Follow [VIAVI's OTG setup guide](./VIAVI_TestCenter_OTG_Service_Deployment_Guide.md). Two deployment styles are supported, matching the two Labserver options in §3.4:
 
 **Standalone** *(pair with the standalone Labserver in §3.4)*:
 ```bash
@@ -270,7 +276,7 @@ The commands below use STC version 5.62.0766 as an example. Replace the version 
    docker-compose -f otg-compose.yaml down
    ```
 
-For deploying multiple OTG instances, refer to the [VIAVI_TestCenter_OTG_API_Support_Overview.md](VIAVI_TestCenter_OTG_API_Support_Overview.md).
+For deploying multiple OTG instances, refer to the [VIAVI_TestCenter_OTG_Service_Deployment_Guide.md](VIAVI_TestCenter_OTG_Service_Deployment_Guide.md).
 
 
 ### 3.6 (Optional) Deploy the Allure report server
