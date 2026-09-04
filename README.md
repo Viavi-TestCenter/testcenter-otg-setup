@@ -2,6 +2,42 @@
 
 Quick start guide for deploying a Snappi test environment and running the pretest and Snappi smoke test against a SONiC DUT, using a VIAVI **TestCenter (STC)** chassis as the traffic generator, connected through the **OTG (Open Traffic Generator) API service**.
 
+---
+
+## 🚀 Recommended: Automated Setup (Start Here)
+
+**Most users should start here.** The `container/run_snappi_test.sh` script
+automates the entire workflow in one command, driven by a single `config.yaml`
+file:
+
+- Environment provisioning
+- Testbed configuration
+- Minigraph deployment
+- Pretest execution
+- Snappi smoke test execution
+
+To use it, fill in your environment details in `config.yaml` (VIAVI image paths,
+DUT info, license server, etc.) and run the script. This is the fastest way to
+get a working environment and is the recommended path for first-time and routine
+deployments.
+
+For the full usage details, script options, and `config.yaml` field
+reference, see [`container/README.md`](container/README.md).
+
+**Use the detailed guide below instead if you need to:**
+- Understand what each step is actually doing
+- Customize the environment beyond what `config.yaml` exposes
+- Troubleshoot a failure that occurred during the automated run
+- Deploy manually on hardware/topologies the script doesn't yet cover
+
+---
+
+## 📖 Detailed Manual Setup & Reference Guide
+
+The sections below walk through the complete manual deployment and test
+workflow step by step, and double as the reference material for troubleshooting
+the automated flow above.
+
 - [1. Environment Overview](#1-environment-overview)
 - [2. Prepare: Obtain VIAVI Software](#2-prepare-obtain-viavi-software)
 - [3. Deploy the Test Environment](#3-deploy-the-test-environment)
@@ -74,10 +110,6 @@ flowchart LR
 
 
 **Deployment flexibility:** This entire environment can be stood up on a single Linux host — including a single WSL instance on Windows. The DUT side is equally flexible: point the testbed at a physical hardware DUT, or bring up a virtual DUT using the `sonic-vs` image (see §3.3).
-
-> 🚀 **Looking for a faster setup?**
->
-> The sections below describe the complete manual deployment and test workflow step by step. For users who prefer an automated workflow, the companion **`container/run_snappi_test.sh`** script provides a one-command deployment and test execution solution. It automates environment provisioning, testbed configuration, minigraph deployment, pretest execution, and Snappi smoke testing using a single **`config.yaml`** file.
 
 ---
 
