@@ -94,6 +94,8 @@ The TestCenter (STC) and Labserver Docker images, and the OTG setup package, are
 Confirm the exact versions with VIAVI support for your lab — the STC chassis firmware, Labserver, and OTG service versions should be a combination VIAVI has validated together, since a mismatch between them is a common source of control-plane connection failures.
 
 
+**License server (virtual DUT only):** deploying against the virtual `sonic-vs` DUT (§3.3) additionally requires a reachable TestCenter license — set as `SPIRENTD_LICENSE_FILE`/`LICENSE_SERVER` in §3.4/§3.5, format `@hostname` or `host:port` (a network license server, or a local Spirent license manager if you're using a hardware dongle). Contact [VIAVI support](https://www.viavisolutions.com/support) if you don't have one. Physical-DUT lab environments typically already have STC licensing provided by their existing test infrastructure.
+
 **Notes:** Docker Engine 27.3.1 and Docker Compose 1.29.2 (or later) on the deployment Linux VM.
 
 ---
@@ -260,11 +262,16 @@ The commands below use STC version 5.62.0766 as an example. Replace the version 
 
 2. Edit `.env` with the environment specifics, e.g.:
    ```
-   LICENSE_SERVER=10.180.106.61
-   LABSERVER=172.27.0.66
+   LICENSE_SERVER=192.0.2.20
+   LABSERVER=192.168.1.10
    otg_build=otgservice.5.62.0009-20260112080331.sh
    ```
-   Update the `LICENSE_SERVER` and `LABSERVER` IP addresses according to your actual deployment.
+   Update the `LICENSE_SERVER` and `LABSERVER` values according to your actual deployment.
+   `LICENSE_SERVER` is the SPIRENTD_LICENSE_FILE value — see the `license_server` field
+   under [§6 `config.yaml` Reference](#6-configyaml-reference) for accepted formats
+   (network license server or a local Spirent license manager for a hardware dongle) and
+   where to get one if you don't have it. `LABSERVER` is the reachable address of this
+   Labserver container itself.
 
 3. Deploy the OTG and Labserver services:
    ```bash
@@ -330,7 +337,7 @@ Declares every device in the testbed — the DUT, the traffic-generator chassis,
 Hostname,ManagementIp,HwSku,Type
 snappi-sonic-stc,192.168.1.2/24,SNAPPI-tester,DevSnappiChassis
 sonic-s6100-dut1,192.168.1.3/24,Force10-S6000,DevSonic
-snappi-sonic-api-serv,172.27.0.66/24,SNAPPI-tester,DevSnappiApiServ
+snappi-sonic-api-serv,192.168.1.10/24,SNAPPI-tester,DevSnappiApiServ
 ```
 
 | Column | Meaning |
@@ -388,7 +395,7 @@ mgmt_subnet_mask_length='23'
 sonic
 
 [ptf]
-snappi-sonic-ptf     ansible_host='172.27.0.66'  ansible_user=<mgmt_user>
+snappi-sonic-ptf     ansible_host='192.168.1.10'  ansible_user=<mgmt_user>
 ```
 
 | Group | Purpose |
@@ -409,7 +416,7 @@ snappi-sonic-ptf     ansible_host='172.27.0.66'  ansible_user=<mgmt_user>
   topo: tgen_ptf32
   ptf_image_name: docker-stc-api-server
   ptf: snappi-sonic-ptf
-  ptf_ip: 172.27.0.66
+  ptf_ip: 192.168.1.10
   ptf_ipv6:
   server: Server_6
   vm_base:
@@ -682,6 +689,14 @@ http://<allure_host>:5050/allure-docker-service/projects/<project_id>/reports/la
 rm -rf /data/<sonic-mgmt-checkout>/tests/_cache/*
 rm -rf /data/<sonic-mgmt-checkout>/tests/.pytest_cache
 ```
+
+> **Note:** The latest available SONiC-VS build is used by default. In rare cases, a newly published image may contain issues that prevent successful deployment or SSH login. If you encounter errors such as:
+>
+> ```text
+> [ERROR] DUT 192.168.1.3 SSH port not reachable after redeploy
+> ```
+>
+> consider using a different SONiC-VS build. Load a known-good image into Docker and reference its `repository:tag` — in the containerlab topology's `image:` field (§3.3) for the manual flow, or in `dut.image` if you're using `run_snappi_test.sh`. Any image already present in `docker images` takes precedence and will be used directly.
 
 If clearing the cache doesn't resolve the issue, restart the sonic-mgmt Docker container (§3.2) and retry.
 

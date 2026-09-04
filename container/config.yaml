@@ -22,7 +22,14 @@ testcenter:
                                                     # -> otgservice.5.62.*.sh, e.g.
                                                     # otgservice.5.62.0009-20260112080331.sh), since its
                                                     # patch/build numbering doesn't track STC's.
-  license_server: "@license.es.cal.viavi.io"        # SPIRENTD_LICENSE_FILE value written into the labserver
+  license_server: "@license-server.example.com"     # REQUIRED. SPIRENTD_LICENSE_FILE value.
+                                                    # Examples:
+                                                    #   @license-server.company.com
+                                                    #   @10.10.10.10
+                                                    #   license-server.company.com:7443
+                                                    #
+                                                    # For licensing assistance:
+                                                    # https://www.viavisolutions.com/support
 
 # Labserver / OTG service / STC chassis. "standalone" means this tool deploys
 # them on THIS host via docker run + otgctl; "docker-compose" means this tool

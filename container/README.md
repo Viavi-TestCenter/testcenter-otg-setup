@@ -188,6 +188,13 @@ configured version, remove it yourself first (`docker rm -f labserver`, or
 `testcenter.version` itself, which [§7.0](#7-what-each-phase-does)'s
 version-change check will do for you automatically by default.
 
+**License server (`dut.mode: virtual` only):** `testcenter.license_server` (§6) is
+required to bring up the containerized STC/Labserver stack for virtual-DUT testing —
+a network license server or a local Spirent license manager for a hardware dongle,
+format `@hostname` or `host:port`. Contact [VIAVI support](https://www.viavisolutions.com/support)
+if you don't have one. Physical-DUT lab environments typically already have STC
+licensing provided by their existing test infrastructure.
+
 **Virtual DUT:** if `dut.mode: virtual`, either have the
 `sonic-vs` image already tagged in `docker images`, or place a
 `sonic-vs-*.tar.gz`/`.gz` archive under `images.dir` (or set
@@ -345,7 +352,7 @@ the config file itself, not the current working directory.
 | Field | Meaning |
 |---|---|
 | `version` | STC chassis image version → expects `stc_<version>.tgz`, or `Spirent_TestCenter_Docker_<version>.zip` containing it. Also drives the Labserver and OTG service versions below — there is no separate field for either. |
-| `license_server` | Written into the Labserver as `SPIRENTD_LICENSE_FILE`. |
+| `license_server` | REQUIRED. Written into the Labserver as `SPIRENTD_LICENSE_FILE`. Formats: `@license-server.company.com`, `@10.10.10.10`, or `license-server.company.com:7443`. For licensing assistance, contact [VIAVI support](https://www.viavisolutions.com/support). |
 
 Labserver and OTG service versions are **derived**, not configured directly
 (see [§2](#2-prerequisites)): Labserver reuses `version` verbatim and
@@ -714,6 +721,14 @@ the Allure report URL for that run.
 | `otg-compose.yaml under ... does not define a 'labserver'/'otg' service` or `is missing expected file` | The `testcenter-otg-setup` checkout this container solution ships inside (one directory above `container/`) doesn't match the layout this integration expects (e.g. it's been edited or an upstream repo change altered it). | Restore that checkout to a known-good `testcenter-otg-setup` layout (matching guide §3.5). |
 | `Deploying/verifying lab services` spinner runs for minutes with no progress | Not caused by the docker-compose stack anymore — it no longer does any network git operation. Check `deploy_services.log` for what's actually running (e.g. `docker compose ... --build` pulling a base image / installing packages can take a while on a slow link — this is normal progress, not a hang, just not reflected in the spinner text). |
 | `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, or an artifact/image reported missing that's clearly in `docker images` | This shell's `docker` group membership isn't active (common right after the user was added to the group without a fresh login) — `docker_bootstrap_sudo` (`lib/common.sh`) detects this and falls back to `sudo docker` for the rest of the run, priming it once up front so later calls don't silently hang waiting on a password. If it still blocks, `sudo` itself is failing (misconfigured `sudoers`, or a password is required and nobody is watching the terminal). | Enter the `sudo` password when prompted at the start of the run, or avoid the prompt entirely by fixing the underlying group membership — see [§2](#2-prerequisites). |
+
+> **Note:** The latest available SONiC-VS build is used by default. In rare cases, a newly published image may contain issues that prevent successful deployment or SSH login. If you encounter errors such as:
+>
+> ```text
+> [ERROR] DUT 192.168.1.3 SSH port not reachable after redeploy
+> ```
+>
+> consider using a different SONiC-VS build. You can load a known-good image into Docker and specify its `repository:tag` in `dut.image`. Any image already present in `docker images` takes precedence and will be used directly.
 
 If clearing the cache doesn't resolve an issue, `--destroy` and re-run —
 this discards only tool-owned state, never a physical DUT or externally

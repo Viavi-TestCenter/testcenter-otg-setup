@@ -3,7 +3,7 @@
 echo "Starting entrypoint script"
 
 # Check if LABSERVER is set, otherwise use default value
-LABSERVER=${LABSERVER:-"10.109.125.126"}
+LABSERVER=${LABSERVER:-"192.0.2.10"}
 echo "Using LABSERVER: $LABSERVER"
 
 CONTAINER_ID=$(cat /proc/self/cgroup | grep 'memory' | awk -F'/' '{print $3}' | head -n 1)

@@ -44,6 +44,26 @@ def require(d, path, typ=None, allow_empty=True):
     return cur
 
 
+PLACEHOLDER_LICENSE_SERVER = "@license-server.example.com"
+
+
+def check_license_server(cfg):
+    """testcenter.license_server gets its own dedicated, non-aggregated error:
+    it's the #1 public-release stumbling block, so it's worth a message that
+    stands on its own instead of a one-line bullet buried in the generic list."""
+    value = cfg.get("testcenter", {}).get("license_server")
+    if isinstance(value, str) and value.strip() and value.strip() != PLACEHOLDER_LICENSE_SERVER:
+        return
+    sys.stderr.write(
+        "Invalid configuration: 'testcenter.license_server'.\n\n"
+        f"The value cannot be empty and must not be the default placeholder '{PLACEHOLDER_LICENSE_SERVER}'. "
+        "Configure a valid STC license server (for example, '@hostname' or 'host:port').\n\n"
+        "For licensing assistance, contact VIAVI Support:\n"
+        "https://www.viavisolutions.com/support\n"
+    )
+    sys.exit(1)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.stderr.write("usage: config_loader.py <config.yaml>\n")
@@ -73,7 +93,7 @@ def main():
     # keys - both are derived from testcenter.version at emit() time (see
     # there for exactly how).
     require(cfg, "testcenter.version", str, allow_empty=False)
-    require(cfg, "testcenter.license_server", str, allow_empty=False)
+    check_license_server(cfg)
 
     # ---- deployment ----
     mode = require(cfg, "deployment.mode", str, allow_empty=False)
