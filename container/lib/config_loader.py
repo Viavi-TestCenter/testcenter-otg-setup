@@ -44,26 +44,6 @@ def require(d, path, typ=None, allow_empty=True):
     return cur
 
 
-PLACEHOLDER_LICENSE_SERVER = "@license-server.example.com"
-
-
-def check_license_server(cfg):
-    """testcenter.license_server gets its own dedicated, non-aggregated error:
-    it's the #1 public-release stumbling block, so it's worth a message that
-    stands on its own instead of a one-line bullet buried in the generic list."""
-    value = cfg.get("testcenter", {}).get("license_server")
-    if isinstance(value, str) and value.strip() and value.strip() != PLACEHOLDER_LICENSE_SERVER:
-        return
-    sys.stderr.write(
-        "Invalid configuration: 'testcenter.license_server'.\n\n"
-        f"The value cannot be empty and must not be the default placeholder '{PLACEHOLDER_LICENSE_SERVER}'. "
-        "Configure a valid STC license server (for example, '@hostname' or 'host:port').\n\n"
-        "For licensing assistance, contact VIAVI Support:\n"
-        "https://www.viavisolutions.com/support\n"
-    )
-    sys.exit(1)
-
-
 def main():
     if len(sys.argv) != 2:
         sys.stderr.write("usage: config_loader.py <config.yaml>\n")
@@ -93,7 +73,16 @@ def main():
     # keys - both are derived from testcenter.version at emit() time (see
     # there for exactly how).
     require(cfg, "testcenter.version", str, allow_empty=False)
-    check_license_server(cfg)
+    # Optional, defaults to "virtual" - kept out of require() so existing
+    # config.yaml files from before this option existed keep validating.
+    tc_mode = cfg.get("testcenter", {}).get("mode", "virtual")
+    if tc_mode not in ("virtual", "physical"):
+        err("testcenter.mode must be 'virtual' or 'physical'")
+    # testcenter.license_server's non-empty/non-placeholder check is NOT done
+    # here - it's a run-mode-specific business rule (only --full and
+    # --smoke-test need a real license before running traffic), not a config
+    # schema concern, so it's enforced in run_snappi_test.sh after load_config,
+    # gated on $MODE.
 
     # ---- deployment ----
     mode = require(cfg, "deployment.mode", str, allow_empty=False)
@@ -113,6 +102,12 @@ def main():
     dut_mode = require(cfg, "dut.mode", str, allow_empty=False)
     if dut_mode is not None and dut_mode not in ("virtual", "physical"):
         err("dut.mode must be 'virtual' or 'physical'")
+    if dut_mode in ("virtual", "physical") and tc_mode in ("virtual", "physical") and dut_mode != tc_mode:
+        err(
+            f"testcenter.mode ({tc_mode!r}) and dut.mode ({dut_mode!r}) must match - "
+            "mixed virtual/physical deployments (e.g. a containerized STC chassis cabled to a "
+            "physical DUT) are not supported. Set both to 'virtual' or both to 'physical'."
+        )
     require(cfg, "dut.hostname", str, allow_empty=False)
     require(cfg, "dut.mgmt_ip", str, allow_empty=False)
     require(cfg, "dut.hwsku", str, allow_empty=False)
@@ -159,13 +154,6 @@ def main():
             for k in ("bandwidth", "vlan_id"):
                 if not isinstance(link.get(k), int):
                     err(f"dut.links[{i}].{k} must be an integer")
-            if dut_mode == "physical":
-                hi = link.get("host_interface", "")
-                if not isinstance(hi, str) or not hi.strip():
-                    err(
-                        f"dut.links[{i}].host_interface is required when dut.mode is 'physical' "
-                        "(the host NIC cabled to this STC port, e.g. enp1s0f0)"
-                    )
 
     # ---- otg ----
     require(cfg, "otg.credentials.user", str, allow_empty=False)
@@ -267,6 +255,7 @@ def emit(cfg):
     tc_version = get("testcenter.version")
     otg_version_prefix = ".".join(str(tc_version).split(".")[:2])
 
+    scalar("CFG_TC_MODE", get("testcenter.mode", "virtual"))
     scalar("CFG_TC_VERSION", tc_version)
     scalar("CFG_TC_LABSERVER_VERSION", tc_version)
     scalar("CFG_TC_OTGSERVICE_VERSION", otg_version_prefix)

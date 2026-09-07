@@ -3,7 +3,7 @@
 echo "Starting entrypoint script"
 
 # Check if LABSERVER is set, otherwise use default value
-LABSERVER=${LABSERVER:-"192.0.2.10"}
+LABSERVER=${LABSERVER:-"192.168.1.10"}
 echo "Using LABSERVER: $LABSERVER"
 
 CONTAINER_ID=$(cat /proc/self/cgroup | grep 'memory' | awk -F'/' '{print $3}' | head -n 1)
@@ -37,5 +37,3 @@ sleep 5
 # Prevent the container from exiting
 echo "Entering sleep mode to keep container running"
 exec sleep infinity
-
-

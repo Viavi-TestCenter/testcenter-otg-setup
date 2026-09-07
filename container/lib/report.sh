@@ -30,10 +30,10 @@ print_run_config() {
     if [[ "$CFG_DEPLOY_MODE" == "docker-compose" ]]; then
         row "  Compose stack" "otg-compose.yaml (project=$COMPOSE_PROJECT, source=$OTG_SOURCE_DIR)"
     fi
-    if [[ "$CFG_DEPLOY_MODE" != "provisioned" ]]; then
+    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
         row "STC chassis" "Docker container via containerlab (mgmt ${CFG_STC_CHASSIS_IP})"
     else
-        row "STC chassis" "Externally provisioned (mgmt ${CFG_STC_CHASSIS_IP})"
+        row "STC chassis" "Physical hardware (mgmt ${CFG_STC_CHASSIS_IP})"
     fi
     if [[ "$CFG_DUT_MODE" == "virtual" ]]; then
         row "SONiC DUT" "Virtual (sonic-vs) - Docker container via containerlab"
