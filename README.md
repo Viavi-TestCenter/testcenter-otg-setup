@@ -125,6 +125,8 @@ The TestCenter (STC) and Labserver Docker images, and the OTG setup package, are
 
 Confirm the exact versions with VIAVI support for your lab — the STC chassis firmware, Labserver, and OTG service versions should be a combination VIAVI has validated together, since a mismatch between them is a common source of control-plane connection failures.
 
+If you're using the automated `container/run_snappi_test.sh` workflow, once these artifacts are placed under `images.dir` you can run `./run_snappi_test.sh --list-versions` to see which STC versions are currently deliverable/testable and whether the version configured in `config.yaml` is one of them — see [container/README.md §5](container/README.md#5-command-line-usage).
+
 
 **License server (virtual DUT only):** deploying against the virtual `sonic-vs` DUT (§3.3) additionally requires a reachable TestCenter license — set as `SPIRENTD_LICENSE_FILE`/`LICENSE_SERVER` in §3.4/§3.5, format `@hostname` or `host:port` (a network license server, or a local Spirent license manager if you're using a hardware dongle). Contact [VIAVI support](https://www.viavisolutions.com/support) if you don't have one. Physical-DUT lab environments typically already have STC licensing provided by their existing test infrastructure.
 

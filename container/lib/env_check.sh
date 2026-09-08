@@ -121,22 +121,28 @@ phase_check_artifacts() {
     # or as a zip distribution (Spirent_TestCenter_Docker_<version>.zip) that
     # contains that same tgz - the zip is only unpacked when no plain tgz is
     # found, so an already-extracted tgz is always reused as-is.
+    # Only relevant when testcenter.mode=virtual - a physical chassis has no
+    # docker image to validate at all.
     STC_IMAGE_FILE=""
-    if docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qx "stc:${CFG_TC_VERSION}"; then
-        log_ok "STC image stc:${CFG_TC_VERSION} already present in 'docker images' - artifact file not required"
-    else
-        STC_IMAGE_FILE=$(_find_exact_artifact "stc_${CFG_TC_VERSION}.tgz" "stc_*${CFG_TC_VERSION}*.tgz" true); rc=$?
-        if [[ $rc -eq 3 ]]; then
-            die "Ambiguous artifact match for STC image (stc:${CFG_TC_VERSION}) under $IMAGES_DIR (see the file list logged above). Pin an exact version in config.yaml so exactly one file matches."
-        elif [[ $rc -ne 0 ]]; then
-            local stc_zip zip_rc
-            stc_zip=$(_find_exact_artifact "Spirent_TestCenter_Docker_${CFG_TC_VERSION}.zip" "Spirent_TestCenter_Docker_*${CFG_TC_VERSION}*.zip" true); zip_rc=$?
-            case "$zip_rc" in
-                0) _extract_stc_tgz_from_zip "$stc_zip" ;;
-                3) die "Ambiguous artifact match for STC image zip (stc:${CFG_TC_VERSION}) under $IMAGES_DIR (see the file list logged above). Pin an exact version in config.yaml so exactly one file matches." ;;
-                *) die "STC image (stc:${CFG_TC_VERSION}) not found under $IMAGES_DIR (expected 'stc_${CFG_TC_VERSION}.tgz' or 'Spirent_TestCenter_Docker_${CFG_TC_VERSION}.zip') and no equivalent already imported into docker. Obtain it from VIAVI support and place it there, or import it into docker/containerd first." ;;
-            esac
+    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+        if docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qx "stc:${CFG_TC_VERSION}"; then
+            log_ok "STC image stc:${CFG_TC_VERSION} already present in 'docker images' - artifact file not required"
+        else
+            STC_IMAGE_FILE=$(_find_exact_artifact "stc_${CFG_TC_VERSION}.tgz" "stc_*${CFG_TC_VERSION}*.tgz" true); rc=$?
+            if [[ $rc -eq 3 ]]; then
+                die "Ambiguous artifact match for STC image (stc:${CFG_TC_VERSION}) under $IMAGES_DIR (see the file list logged above). Pin an exact version in config.yaml so exactly one file matches."
+            elif [[ $rc -ne 0 ]]; then
+                local stc_zip zip_rc
+                stc_zip=$(_find_exact_artifact "Spirent_TestCenter_Docker_${CFG_TC_VERSION}.zip" "Spirent_TestCenter_Docker_*${CFG_TC_VERSION}*.zip" true); zip_rc=$?
+                case "$zip_rc" in
+                    0) _extract_stc_tgz_from_zip "$stc_zip" ;;
+                    3) die "Ambiguous artifact match for STC image zip (stc:${CFG_TC_VERSION}) under $IMAGES_DIR (see the file list logged above). Pin an exact version in config.yaml so exactly one file matches." ;;
+                    *) die "STC image (stc:${CFG_TC_VERSION}) not found under $IMAGES_DIR (expected 'stc_${CFG_TC_VERSION}.tgz' or 'Spirent_TestCenter_Docker_${CFG_TC_VERSION}.zip') and no equivalent already imported into docker. Obtain it from VIAVI support and place it there, or import it into docker/containerd first." ;;
+                esac
+            fi
         fi
+    else
+        log_ok "testcenter.mode=physical - STC chassis is external hardware, no docker image required"
     fi
 
     # --- Labserver: reuse if a container/image already exists, else require file ---
@@ -208,7 +214,9 @@ phase_check_artifacts() {
         fi
     fi
 
-    log_ok "Artifacts validated: stc=$(basename "${STC_IMAGE_FILE:-<docker images>}") labserver=$(basename "${LABSERVER_IMAGE_FILE:-<existing>}")${OTGSERVICE_FILE:+ otgservice=$(basename "$OTGSERVICE_FILE")}"
+    local stc_summary="<physical chassis>"
+    [[ "$CFG_TC_MODE" == "virtual" ]] && stc_summary="$(basename "${STC_IMAGE_FILE:-<docker images>}")"
+    log_ok "Artifacts validated: stc=${stc_summary} labserver=$(basename "${LABSERVER_IMAGE_FILE:-<existing>}")${OTGSERVICE_FILE:+ otgservice=$(basename "$OTGSERVICE_FILE")}"
 }
 
 # Builds the sonic-vs docker image per guide §3.3: downloads sonic-vs.img.gz
@@ -388,20 +396,34 @@ for row in re.findall(r"<tr>(.*?)</tr>", html, re.S):
     }
 }
 
-# Clones vrnetlab into the images cache on first use, reused as-is on later
-# runs. Always tracks whatever is HEAD at first clone; there is no version
-# pin here since vrnetlab's sonic/Makefile behavior (what actually matters)
-# has been stable.
+# Use this known-good commit instead of tracking upstream master, as the
+# latest master build generates an image that cannot be accessed via SSH.
+VRNETLAB_PIN_COMMIT="3f82405b"
+
+# Clones vrnetlab into the images cache on first use (reused as-is on later
+# runs), then makes sure it's checked out at VRNETLAB_PIN_COMMIT - including
+# on a cache left over from before the pin existed, so a stale master
+# checkout doesn't silently get built instead.
 _ensure_vrnetlab_repo() {
     local dir="$1"
     if [[ -d "$dir/.git" ]]; then
         log_info "Reusing cached vrnetlab checkout at $dir"
-        return
+    else
+        [[ -e "$dir" ]] && die "Expected a git checkout at $dir but it exists without a .git directory - remove it or fix it manually."
+        log_info "Cloning vrnetlab (https://github.com/srl-labs/vrnetlab) into $dir"
+        _git_net clone --quiet https://github.com/srl-labs/vrnetlab "$dir" \
+            || die "git clone of https://github.com/srl-labs/vrnetlab failed or timed out after 60s - check network access."
     fi
-    [[ -e "$dir" ]] && die "Expected a git checkout at $dir but it exists without a .git directory - remove it or fix it manually."
-    log_info "Cloning vrnetlab (https://github.com/srl-labs/vrnetlab) into $dir"
-    _git_net clone --quiet https://github.com/srl-labs/vrnetlab "$dir" \
-        || die "git clone of https://github.com/srl-labs/vrnetlab failed or timed out after 60s - check network access."
+
+    if [[ "$(git -C "$dir" rev-parse HEAD)" != "$(git -C "$dir" rev-parse "$VRNETLAB_PIN_COMMIT" 2>/dev/null)" ]]; then
+        log_info "Checking out pinned vrnetlab commit $VRNETLAB_PIN_COMMIT"
+        if ! git -C "$dir" checkout --quiet "$VRNETLAB_PIN_COMMIT" 2>/dev/null; then
+            _git_net -C "$dir" fetch --quiet origin \
+                || die "fetch of vrnetlab origin failed or timed out after 60s - check network access."
+            git -C "$dir" checkout --quiet "$VRNETLAB_PIN_COMMIT" \
+                || die "git checkout of pinned vrnetlab commit $VRNETLAB_PIN_COMMIT failed - the commit may no longer exist on the srl-labs/vrnetlab repo."
+        fi
+    fi
 
     # Tracks that THIS tool actually created this checkout, so --destroy only
     # ever considers removing it when dut.keep_dut_artifacts=false - see

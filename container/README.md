@@ -74,7 +74,7 @@ flowchart LR
 | **sonic-mgmt Docker** | Runs Ansible playbooks and the `pytest` test suite. Talks to the DUT over SSH and to the traffic generator through the `snappi` SDK. |
 | **OTG API Docker** (`docker-stc-api-server`) | Translates `snappi` API calls into STC/Labserver REST calls. |
 | **Labserver** | Manages STC chassis port reservation/resource allocation. |
-| **STC Chassis** | The traffic generator, deployed as a containerlab node. Its front-panel ports are wired either to a virtual DUT (`sonic-vs`, also a containerlab node) or cabled to a physical DUT. |
+| **STC Chassis** | The traffic generator. With `testcenter.mode: virtual` (default), deployed as a containerlab node wired to a virtual DUT (`sonic-vs`, also a containerlab node). With `testcenter.mode: physical`, both the chassis and the DUT are pre-existing real hardware, cabled to each other outside this tool's control - no containerlab node is created for either. |
 | **Allure Server** *(optional)* | Collects and renders HTML test reports. |
 
 Everything above can be stood up on a single Linux host, including a single
@@ -148,6 +148,14 @@ them into `images.dir` (default `./images`, next to `config.yaml`):
 | Labserver Docker image | `labserver-<version>.tar.xz` | derived from `testcenter.version`, exact match |
 | OTG API service installer | `otgservice.<major.minor>.*.sh` | derived from `testcenter.version`, **major.minor prefix only** |
 
+Run `./run_snappi_test.sh --list-versions` at any time to see which STC
+versions are currently deliverable/testable — from what's sitting under
+`images.dir` **and** whatever's already loaded into `docker images` (an
+`stc:<version>` or `*labserver*:<version>` tag needs no artifact file at
+all), whether the version configured in `testcenter.version` is one of them,
+and a final rollup line of every version that's fully ready right now — see
+[§5](#5-command-line-usage).
+
 The Labserver image and OTG service installer above are required for
 **both** `deployment.mode: standalone` and `deployment.mode: docker-compose`
 — the difference between the two is only *how* they're deployed, not which
@@ -175,8 +183,10 @@ already running (or, for the Labserver, already loaded into `docker
 images`) → nothing to do; only if neither is true does the script fall back
 to the artifact file (see [§7.2](#7-what-each-phase-does)).
 
-The STC chassis container is always rebuilt on the configured
-`testcenter.version` (see §8), so it can never silently drift. The Labserver
+When `testcenter.mode: virtual`, the STC chassis container is always rebuilt
+on the configured `testcenter.version` (see §8), so it can never silently
+drift. (When `testcenter.mode: physical`, there is no container at all -
+`testcenter.version` is not consulted.) The Labserver
 is not: it's reused as-is whenever a running/responding container is already
 there, without checking whether it matches the version derived from
 `testcenter.version`. If it doesn't match, the script logs a warning naming
@@ -188,12 +198,17 @@ configured version, remove it yourself first (`docker rm -f labserver`, or
 `testcenter.version` itself, which [§7.0](#7-what-each-phase-does)'s
 version-change check will do for you automatically by default.
 
-**License server (`dut.mode: virtual` only):** `testcenter.license_server` (§6) is
-required to bring up the containerized STC/Labserver stack for virtual-DUT testing —
+**License server (`testcenter.mode: virtual` only):** `testcenter.license_server` (§6) is
+required to run real traffic through the containerized STC chassis/Labserver stack —
 a network license server or a local Spirent license manager for a hardware dongle,
 format `@hostname` or `host:port`. Contact [VIAVI support](https://www.viavisolutions.com/support)
-if you don't have one. Physical-DUT lab environments typically already have STC
-licensing provided by their existing test infrastructure.
+if you don't have one. `testcenter.mode: physical` lab environments typically already have STC
+licensing provided by their existing test infrastructure, so this field is not validated or used in that mode.
+This check is enforced by `run_snappi_test.sh` itself (not `config.yaml` schema validation), and gates
+every mode that can reach the Snappi smoke test — no-flag/`full`, `--test-only`, and `--smoke-test` (see
+the Mode → phases matrix below). `--pretest` explicitly skips the smoke test, and `--deploy-only`,
+`--deploy-mg`, `--gen-config`, `--destroy`, `--show-config`, `--list-versions` never reach it either, so
+none of those are gated by this check and load/run regardless of this field's value.
 
 **Virtual DUT:** if `dut.mode: virtual`, either have the
 `sonic-vs` image already tagged in `docker images`, or place a
@@ -218,15 +233,24 @@ one you already use for other test work) to reuse as-is — see
 ## 3. Quick Start
 
 ```bash
-cd workspace/release
+cd container
 
 # 1. Place VIAVI artifacts (see §2) under ./images/, or point images.dir
 #    at wherever you keep them.
 
 # 2. Edit config.yaml for your lab: DUT IP/credentials/hwsku, cabled
 #    links, image versions, deployment.mode, dut.mode. See §6.
+#
+#    If testcenter.mode: virtual, also set testcenter.license_server -
+#    it's required to reach the Snappi smoke test (see §2/§6). Not needed
+#    when testcenter.mode: physical.
 
-# 3. Run it.
+# 3. Check which TestCenter (STC) versions are currently deliverable/testable,
+#    based on the artifacts already sitting under images.dir, and confirm
+#    testcenter.version (§6) is one of them:
+./run_snappi_test.sh --list-versions
+
+# 4. Run it.
 ./run_snappi_test.sh
 
 # Or, against a config file living elsewhere:
@@ -246,34 +270,43 @@ ends with a `SNAPPI TEST SUMMARY` block and `RESULT: PASS` (or `FAIL`) — see
 ## 4. Directory Layout
 
 ```
-workspace/release/
+container
 ├── run_snappi_test.sh              # entry point
 ├── config.yaml                     # single source of truth for a lab run
 ├── snappi-stc-patch-v0.1.patch     # STC/OTG compatibility patch for sonic-mgmt
 ├── lib/                            # one file per phase, sourced by run_snappi_test.sh
 │   ├── common.sh                   # logging, locking, ownership-state helpers
-│   ├── config.sh                   # config.yaml loader/validator
+│   ├── config.sh                   # config.yaml loader/validator (wraps config_loader.py)
+│   ├── config_loader.py            # strict config.yaml schema validation -> CFG_* shell vars
 │   ├── env_check.sh                # phase 1-2: host deps + artifact validation
 │   ├── sonic_mgmt.sh                # phase 3: sonic-mgmt checkout + container
 │   ├── gen_config.sh               # phase 4: Ansible/testbed/topology generation
+│   ├── patch_testbed_yaml.py        # inserts/replaces this testbed's entry in testbed.yaml
 │   ├── deploy.sh                   # phase 5: labserver/OTG/containerlab + --destroy
 │   ├── verify.sh                   # phase 6: connectivity + inventory verify
 │   ├── run_tests.sh                # phase 7: deploy-mg, pretest, smoke test
 │   ├── cleanup.sh                  # phase 8: cache cleanup / failure teardown
-│   └── report.sh                   # phase 9: summary + summary.json
+│   ├── report.sh                   # phase 9: summary + summary.json
+│   └── versions.sh                 # --list-versions: scans images.dir + docker images
 ├── images/                         # your local cache of VIAVI + sonic-vs artifacts
+│   └── vrnetlab/                   # cached vrnetlab checkout used to build sonic-vs (see §2/§7.2)
 ├── logs/<timestamp>/               # per-run logs (see §11)
 └── .run_snappi_test/               # tool-owned work dir (see below)
     ├── state.env                   # OWN_* flags (what --destroy is allowed to remove)
     │                               #   + DEPLOY_MG_DONE (see §5)
     ├── run.lock                    # prevents two concurrent runs on the same config
     ├── snappi-topology.yml         # generated containerlab topology
+    ├── containerlab-deploy.log     # raw `containerlab deploy` output (testcenter.mode: virtual)
     ├── otgservice/                 # extracted OTG service installer (standalone mode)
     ├── testcenter-otg-setup/        # docker-compose mode only: otg-compose.yaml/
     │                               #   Dockerfile/entrypoint.sh copied from the
     │                               #   testcenter-otg-setup checkout one directory
     │                               #   above container/, plus the generated .env
     │                               #   and image-pin override (see §7.6)
+    ├── docker-compose-up.log       # raw `docker compose up` output (deployment.mode: docker-compose)
+    ├── allure/                     # only when allure.enabled: true
+    │   ├── docker-compose.yml      # generated allure + allure-ui stack definition
+    │   └── projects/               # Allure results/history volume, mounted into the container
     └── sonic-mgmt/                 # default sonic-mgmt clone (if source_dir is empty)
 ```
 
@@ -301,25 +334,29 @@ leave that clone in place too.
 | `--deploy-mg` | Run only `deploy-mg` against an already-deployed environment (same preconditions as `--test-only`). Regenerates the Ansible config and runs connectivity/inventory verify first, then stops — no pretest/smoke test/cleanup. |
 | `--pretest` | Run only the pretest against an already-deployed environment. If `deploy-mg` hasn't been done since the environment was last (re)deployed, it's triggered automatically first (same as `--deploy-mg`); otherwise the prior `deploy-mg` is reused. |
 | `--smoke-test` | Run only the Snappi smoke test against an already-deployed environment. Same automatic `deploy-mg` trigger as `--pretest`. |
+| `--gen-config` | Regenerate only the testbed config files from guide §4.1–4.7 (device/link CSVs, Ansible inventory, `testbed.yaml`, topology vars, DUT/OTG credentials) — excludes §4.8's STC/OTG patch, the password file, and the containerlab topology. Requires the sonic-mgmt source checkout to already exist; doesn't need the sonic-mgmt container running, deploy anything, or run tests. |
 | `--no-cleanup` | Skip the post-test pytest/Ansible cache cleanup only. Never affects deployed services (see `--destroy` for that). |
 | `--destroy` | Remove only resources this tool itself created. Never touches externally provisioned services, a user-supplied sonic-mgmt checkout, or a physical DUT. Runs no tests. |
 | `--show-config` | Load, validate and print the resolved run configuration (versions, deployment topology, sonic-mgmt source, cleanup policy), then exit. Read-only — no lock, no log dir, no phases run. |
+| `--list-versions` | Scan `images.dir` **and** `docker images` and report which TestCenter (STC) versions are currently deliverable/testable (STC + Labserver present as either an artifact file or an already-loaded `stc:<version>`/`*labserver*:<version>` docker image tag, OTG service installer matching major.minor — see [§2](#2-prerequisites)), plus whether the configured `testcenter.version` is ready, and a final rollup line of every version that's fully ready right now. Read-only — no lock, no log dir, no phases run, nothing extracted/downloaded. |
 | `-h, --help` | Show usage and exit. |
 
 **Mode → phases matrix:**
 
-| Phase | full (default) | `--deploy-only` | `--test-only` | `--deploy-mg` | `--pretest` | `--smoke-test` | `--destroy` | `--show-config` |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Env check / artifact validation | ✅ | ✅ | – | – | – | – | – | – |
-| sonic-mgmt source + container | ✅ | ✅ | – (must already exist) | – (must already exist) | – (must already exist) | – (must already exist) | – | – |
-| Ansible/testbed config generation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – | – |
-| Labserver / OTG / containerlab deploy | ✅ | ✅ | – | – | – | – | – | – |
-| Connectivity/inventory verify | ✅ | – | ✅ | ✅ | only if deploy-mg runs | only if deploy-mg runs | – | – |
-| deploy-mg | ✅ | – | ✅ | ✅ | only if not already done | only if not already done | – | – |
-| Pretest | ✅ | – | ✅ | – | ✅ | – | – | – |
-| Snappi smoke test | ✅ (if pretest passed) | – | ✅ (if pretest passed) | – | – | ✅ | – | – |
-| Cache cleanup | ✅ | – | ✅ | – | ✅ | ✅ | – | – |
-| Teardown tool-owned resources | – | – | – | – | – | – | ✅ | – |
+| Phase | full (default) | `--deploy-only` | `--test-only` | `--deploy-mg` | `--pretest` | `--smoke-test` | `--gen-config` | `--destroy` | `--show-config` | `--list-versions` |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Env check / artifact validation | ✅ | ✅ | – | – | – | – | – | – | – | – |
+| sonic-mgmt source + container | ✅ | ✅ | – (must already exist) | – (must already exist) | – (must already exist) | – (must already exist) | – (must already exist)¹ | – | – | – |
+| Ansible/testbed config generation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (§4.1–4.7 subset only)¹ | – | – | – |
+| Labserver / OTG / containerlab deploy | ✅ | ✅ | – | – | – | – | – | – | – | – |
+| Connectivity/inventory verify | ✅ | – | ✅ | ✅ | only if deploy-mg runs | only if deploy-mg runs | – | – | – | – |
+| deploy-mg | ✅ | – | ✅ | ✅ | only if not already done | only if not already done | – | – | – | – |
+| Pretest | ✅ | – | ✅ | – | ✅ | – | – | – | – | – |
+| Snappi smoke test | ✅ (if pretest passed) | – | ✅ (if pretest passed) | – | – | ✅ | – | – | – | – |
+| Cache cleanup | ✅ | – | ✅ | – | ✅ | ✅ | – | – | – | – |
+| Teardown tool-owned resources | – | – | – | – | – | – | – | ✅ | – | – |
+
+¹ `--gen-config` only requires the sonic-mgmt **source checkout** to be present (unlike the other standalone modes, it doesn't need the sonic-mgmt **container** running), and only regenerates the §4.1–4.7 testbed files (device/link CSVs, Ansible inventory, `testbed.yaml`, topology vars, DUT/OTG credentials) — not the password file or containerlab topology that the other modes' full "Ansible/testbed config generation" step also writes.
 
 `--test-only`, `--deploy-mg`, `--pretest`, and `--smoke-test` all require the
 environment to already be deployed — each fails fast with a clear error if
@@ -351,8 +388,9 @@ the config file itself, not the current working directory.
 ### `testcenter`
 | Field | Meaning |
 |---|---|
-| `version` | STC chassis image version → expects `stc_<version>.tgz`, or `Spirent_TestCenter_Docker_<version>.zip` containing it. Also drives the Labserver and OTG service versions below — there is no separate field for either. |
-| `license_server` | REQUIRED. Written into the Labserver as `SPIRENTD_LICENSE_FILE`. Formats: `@license-server.company.com`, `@10.10.10.10`, or `license-server.company.com:7443`. For licensing assistance, contact [VIAVI support](https://www.viavisolutions.com/support). |
+| `mode` | (optional, default `virtual`) `virtual` — this tool deploys the STC chassis (and the DUT, per `dut.mode`) itself as containerlab-managed docker containers, same as today. `physical` — the STC chassis and the DUT are pre-existing real hardware, reachable at `deployment.stc_chassis.ip` / `dut.mgmt_ip`; this tool deploys neither and never invokes containerlab. **Must equal `dut.mode`** — mixed deployments (e.g. a containerized chassis cabled to a physical DUT) are rejected at config validation. |
+| `version` | STC chassis image version → expects `stc_<version>.tgz`, or `Spirent_TestCenter_Docker_<version>.zip` containing it. Also drives the Labserver and OTG service versions below — there is no separate field for either. Only consulted when `mode: virtual`. |
+| `license_server` | REQUIRED when `mode: virtual` **and** the run is `full` (no flag), `--test-only`, or `--smoke-test` — every mode that can reach the Snappi smoke test (see §5's Mode → phases matrix). Checked by `run_snappi_test.sh` itself, not by `config.yaml` schema validation, so every other mode (`--deploy-only`, `--deploy-mg`, `--pretest`, `--gen-config`, `--destroy`, `--show-config`, `--list-versions`) accepts any value here, including empty or the placeholder. Written into the Labserver as `SPIRENTD_LICENSE_FILE`. Formats: `@license-server.company.com`, `@10.10.10.10`, or `license-server.company.com:7443`. For licensing assistance, contact [VIAVI support](https://www.viavisolutions.com/support). Not validated/used at all when `mode: physical` — a physical chassis typically has its own separate licensing path. |
 
 Labserver and OTG service versions are **derived**, not configured directly
 (see [§2](#2-prerequisites)): Labserver reuses `version` verbatim and
@@ -367,23 +405,26 @@ needs to match `version`'s leading `major.minor` and is glob-matched as
 | `docker_compose.keep_build_image` | Only used when `mode: docker-compose`. Optional, default `true`. `--destroy` (and same-scope teardowns) leave the OTG image built for this stack (`otg:latest`) in place, so the next deploy skips rebuilding it from the installer. Set `false` to also remove it on destroy. Never affects Labserver images — see [§8](#8-reuse--idempotency-behavior). |
 | `labserver.ip` | Reachable IP of the Labserver. |
 | `otg_service.ip` / `.port` | Reachable IP/port of the OTG API service. |
-| `stc_chassis.ip` | STC chassis container's management IP (containerlab-assigned). |
+| `stc_chassis.ip` | `testcenter.mode: virtual` — STC chassis container's management IP (containerlab-assigned). `testcenter.mode: physical` — REQUIRED: management IP of the real STC chassis. |
 
-The STC chassis (`stc_chassis.ip`) is **always** deployed via containerlab
-regardless of `deployment.mode` — the mode only governs how the Labserver
-and OTG service are deployed.
+Whether the STC chassis (`stc_chassis.ip`) is deployed via containerlab is
+governed by `testcenter.mode` (§6 above), not `deployment.mode` — the latter
+only governs how the Labserver and OTG service are deployed, independently
+of the chassis.
 
 ### `dut`
 | Field | Meaning |
 |---|---|
-| `mode` | `virtual` (deploy `sonic-vs` via containerlab) or `physical` (existing hardware). |
-| `hostname`, `mgmt_ip`, `hwsku`, `iface_speed` | DUT identity, matched against the Ansible inventory/topology. |
+| `mode` | `virtual` (deploy `sonic-vs` via containerlab) or `physical` (existing hardware, management IP required — see `mgmt_ip` below). **Must equal `testcenter.mode`** (§6 above) — mixed deployments are rejected at config validation. |
+| `hostname`, `mgmt_ip`, `hwsku`, `iface_speed` | DUT identity, matched against the Ansible inventory/topology. `mgmt_ip` is REQUIRED and, in `physical` mode, is the management IP of the real DUT (no containerlab node is created for it). |
 | `total_ports` | Full front-panel port count of the platform (topology port range) — independent of how many ports are actually cabled. |
 | `image`, `image_archive` | Virtual mode only: the `sonic-vs` image tag, and optionally an explicit archive path (empty = auto-detect under `images.dir`). |
 | `build_sonic_vs` | (optional, default `true`) Virtual mode only. If `image` is not found in `docker images` and no archive is found/configured, and `image`'s repository is exactly `vrnetlab/sonic_sonic-vs`, automatically build it (guide §3.3: download `sonic-vs.img.gz` for `image`'s tag per `download_source` below and run vrnetlab's build). Always builds the tag `image` actually asks for (`master` or a release branch like `202511`) - never fabricates one tag's content from another's build. Fails with a clear error if the selected source(s) have no published `sonic-vs.img.gz` for that tag - set to `false` to always require a manually provided image/archive. **An image already present in `docker images` is always used as-is** - including a custom/manually-built tag with no corresponding SONiC branch name - so none of this (or `download_source` below) is ever consulted for it. |
 | `download_source` | (optional, default `auto`) Virtual mode only; only consulted when `build_sonic_vs` above actually needs to download+build (never for an already-local image). `auto` - try Azure Pipelines first, fall back to sonic.software if Azure has no successful build for that tag (or is unreachable). `azure` - Azure Pipelines only (`sonic-build.azurewebsites.net`, pipeline 142). `sonic.software` - sonic.software only. See guide §3.3. |
+| `keep_dut_artifacts` | (optional, default `true`) Virtual mode only. Has no effect unless `build_sonic_vs` actually built the image at least once (tracked as `OWN_DUT_ARTIFACTS`, see [§10](#10---destroy-and-ownership-tracking)) — never touches a manually-provided `vrnetlab` checkout or archive. If `true`, `--destroy` (and same-scope teardowns) leave the downloaded/built artifacts under `images.dir/vrnetlab` (the `vrnetlab` source checkout and the extracted `sonic-vs-<tag>.qcow2`) in place, so the next build skips re-cloning/re-downloading. Set `false` to remove them on destroy, forcing a fresh clone/download next time. |
+| `keep_dut_image` | (optional, default `true`) Virtual mode only. Has no effect unless `build_sonic_vs` actually built the image at least once (tracked as `OWN_DUT_IMAGE`) — never removes a manually-provided/pulled `dut.image`. If `true`, `--destroy` (and same-scope teardowns) leave the built `sonic-vs` image (`dut.image`) in place, so the next deploy skips rebuilding it. Set `false` to remove it on destroy, forcing a rebuild next time. |
 | `credentials.user` / `.password` | DUT login used for SSH key bootstrap and Ansible. |
-| `links[]` | One entry per DUT↔STC cable: `dut_port`, `stc_port`, `bandwidth`, `vlan_id`, and (physical mode only) `host_interface` — the host NIC cabled to that STC port. **At least 2 links are required** for the all-to-all smoke test. |
+| `links[]` | One entry per DUT↔STC cable: `dut_port`, `stc_port`, `bandwidth`, `vlan_id`. **At least 2 links are required** for the all-to-all smoke test. `host_interface` is DEPRECATED and unused — it only applied to a containerized chassis cabled to a physical DUT, a combination no longer supported now that `testcenter.mode` must match `dut.mode`; kept in the schema only for backward compatibility with existing `config.yaml` files. |
 
 ### `otg`
 | Field | Meaning |
@@ -483,7 +524,13 @@ triggers an automatic build here instead of failing — downloading
 `sonic-vs.img.gz` for that tag per `dut.download_source` (default `auto`:
 Azure Pipelines, falling back to sonic.software) and running vrnetlab's
 build (guide §3.3); it always builds the exact tag configured, failing
-clearly if the selected source(s) have no published build for it.
+clearly if the selected source(s) have no published build for it. The
+vrnetlab source itself is cloned from `srl-labs/vrnetlab` but pinned to a
+known-good commit (`VRNETLAB_PIN_COMMIT` in `lib/env_check.sh`) rather than
+tracking `master` — the latest `master` build was found to produce an image
+that isn't reachable via SSH. An existing cached checkout under
+`images.dir/vrnetlab` is re-pinned to that commit automatically if it's on
+a different one.
 
 ### 7.3 sonic-mgmt source (`lib/sonic_mgmt.sh::phase_sonic_mgmt_source`)
 - **User-supplied checkout** (`sonic_mgmt.source_dir` set): never checked
@@ -519,6 +566,16 @@ entirely from `config.yaml` — every run, so they never drift from it.
 `testbed.yaml` and the `group_vars/<inv_name>/<inv_name>.yml` file are
 **patched in place** rather than overwritten, so unrelated content in those
 shared sonic-mgmt files survives.
+
+`--gen-config` runs the same underlying generator (`_gen_testbed_config`),
+but only the subset that corresponds to guide §4.1–4.7 — the device/link
+CSVs, Ansible inventory, `testbed.yaml` patch, `topo_<name>.yml`, and the
+DUT/OTG credentials (`secrets.yml` / `group_vars/<inv_name>/<inv_name>.yml`
+patch). It skips the Ansible Vault password placeholder and the containerlab
+topology file, which aren't part of §4, and it never applies §4.8's STC/OTG
+patch (`phase_sonic_mgmt_source`'s job, §7.3). Useful for regenerating just
+the testbed definition after editing `config.yaml` (cabling, credentials,
+topology) without touching deployed infrastructure.
 
 ### 7.6 Lab services deployment (`lib/deploy.sh::phase_deploy_services`)
 - **Labserver** (`standalone`/`provisioned` modes): `provisioned` mode only
@@ -561,11 +618,12 @@ shared sonic-mgmt files survives.
      `docker compose -p snappi-otg-compose -f otg-compose.yaml -f snappi-labserver-image.override.yaml up -d --build`.
   4. Waits for Labserver HTTP + OTG TCP reachability, then records the
      stack as tool-owned (`OWN_COMPOSE`, see [§10](#10---destroy-and-ownership-tracking)).
-- **containerlab (STC [+ virtual DUT])**: always destroyed and redeployed —
-  this is the one piece that's always fully tool-owned and cheap to
-  recreate, so there's no reuse-detection here. Node containers are
-  double-checked against `docker ps` after `containerlab deploy`, since that
-  command can exit 0 while a node still fails to start.
+- **containerlab (STC + virtual DUT)**: only runs when `testcenter.mode: virtual`
+  (skipped entirely when `physical` - no containers to manage). When it runs, it's
+  always destroyed and redeployed - this is the one piece that's always fully
+  tool-owned and cheap to recreate, so there's no reuse-detection here. Node
+  containers are double-checked against `docker ps` after `containerlab deploy`,
+  since that command can exit 0 while a node still fails to start.
 - **DUT SSH key bootstrap**: installs the sonic-mgmt container's SSH pubkey
   onto the DUT (containerlab destroy/deploy wipes `authorized_keys` on every
   virtual redeploy, so this always re-runs after it).
@@ -625,8 +683,9 @@ environment is destroyed up front and every row below deploys fresh.
 | Labserver (`standalone`/`provisioned`) | Reused if running and responding; restarted if stopped; otherwise recreated from an already-loaded docker image if one is present, and only from the artifact file as a last resort. Reuse is never blocked on version — if the running container's image doesn't match the version derived from `testcenter.version`, the script warns and continues with it anyway (see §2, and §7.0 for the one case that overrides this by tearing it down anyway). |
 | OTG service (`standalone`/`provisioned`) | Reused if already reachable on the configured port. |
 | Labserver + OTG stack (`docker-compose`) | Reused as one unit only if both containers are labeled with this tool's own Compose project and both are reachable (a mismatch is warned about but doesn't block reuse — same policy as standalone Labserver); recreated, with the OTG image rebuilt, otherwise from the `testcenter-otg-setup` checkout this container solution ships inside — see §2/§6. |
-| containerlab topology (STC [+DUT]) | **Always** destroyed and redeployed. |
-| DUT SSH key | Re-bootstrapped every run (cheap; also required after the containerlab redeploy above wipes it). |
+| `sonic-vs` image build (`dut.build_sonic_vs`, virtual mode) | An image already in `docker images` is always used as-is, so the build path below never runs for it. Otherwise: a cached `images.dir/vrnetlab` checkout is reused (re-pinned to `VRNETLAB_PIN_COMMIT` if on a different commit) and a previously extracted `sonic-vs-<tag>.qcow2` is reused instead of re-downloading, per `dut.keep_dut_artifacts`/`dut.keep_dut_image` (default `true` — see §6/§10). |
+| containerlab topology (STC + DUT) | Only exists when `testcenter.mode: virtual`; when it does, **always** destroyed and redeployed. Skipped entirely when `testcenter.mode: physical`. |
+| DUT SSH key | Re-bootstrapped every run (cheap; also required after the containerlab redeploy above wipes it, when running). |
 | Allure | Reused if running; otherwise deployed only when enabled. |
 | Ansible/testbed/topology files | Regenerated (or patched in place) every run from `config.yaml`, so they can't drift out of sync with it. |
 
@@ -654,16 +713,28 @@ deployed regardless of outcome (there's no test phase to fail).
 Every resource this tool creates is recorded in
 `.run_snappi_test/state.env` (`OWN_CLAB`, `OWN_LABSERVER`, `OWN_OTG`,
 `OWN_COMPOSE`, `OWN_ALLURE`, `OWN_SONIC_MGMT_CONTAINER`,
-`OWN_SONIC_MGMT_CLONE`). `OWN_COMPOSE` covers the combined Labserver+OTG
-stack under `deployment.mode: docker-compose` — `OWN_LABSERVER`/`OWN_OTG`
-are only ever set by `standalone` mode instead. `--destroy` reads that file
-and removes **only** the resources flagged there — it never touches:
+`OWN_SONIC_MGMT_CLONE`, `OWN_DUT_IMAGE`, `OWN_DUT_ARTIFACTS`). `OWN_COMPOSE`
+covers the combined Labserver+OTG stack under `deployment.mode:
+docker-compose` — `OWN_LABSERVER`/`OWN_OTG` are only ever set by
+`standalone` mode instead. `--destroy` reads that file and removes **only**
+the resources flagged there — it never touches:
 - a `provisioned`-mode Labserver or OTG service,
 - a user-supplied sonic-mgmt checkout (`sonic_mgmt.source_dir` set),
 - a tool-owned sonic-mgmt clone when `sonic_mgmt.keep_sonic_mgmt_src: true` —
   every other tool-owned resource (containerlab topology, Labserver, OTG
   service, Allure, sonic-mgmt container) is still torn down as usual,
+- a manually-provided/pulled `dut.image` or `vrnetlab` checkout — only ever
+  touched if `dut.build_sonic_vs` actually built/downloaded it itself
+  (`OWN_DUT_IMAGE`/`OWN_DUT_ARTIFACTS`),
 - or a physical DUT.
+
+`OWN_DUT_IMAGE` (the built `sonic-vs` docker image) and `OWN_DUT_ARTIFACTS`
+(the `vrnetlab` source checkout and extracted `.qcow2` under
+`images.dir/vrnetlab`) follow the same keep-by-default policy as the
+docker-compose OTG image below: `dut.keep_dut_image`/`dut.keep_dut_artifacts`
+(both default `true`) leave them in place on `--destroy` so the next build
+can skip re-downloading/re-building; set either to `false` to remove that
+piece on destroy instead.
 
 The `docker-compose`-mode stack (`OWN_COMPOSE`) is torn down via
 `docker compose down` when `.run_snappi_test/testcenter-otg-setup/` is still
@@ -761,6 +832,11 @@ provisioned services.
 # Run only the Snappi smoke test - same automatic deploy-mg trigger
 ./run_snappi_test.sh --smoke-test
 
+# Regenerate only the guide §4.1-4.7 testbed config files (device/link CSVs,
+# Ansible inventory, testbed.yaml, topology vars, DUT/OTG credentials) after
+# editing config.yaml - requires the sonic-mgmt source checkout to exist
+./run_snappi_test.sh --gen-config
+
 # Full run, but keep the pytest/Ansible cache afterward for debugging
 ./run_snappi_test.sh --no-cleanup
 
@@ -773,4 +849,8 @@ provisioned services.
 
 # Print the resolved run configuration and exit (no deploy, no test, no lock)
 ./run_snappi_test.sh --show-config
+
+# Check which STC versions are currently deliverable/testable from images.dir
+# (no deploy, no test, no lock)
+./run_snappi_test.sh --list-versions
 ```

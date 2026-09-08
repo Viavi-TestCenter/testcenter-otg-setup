@@ -11,6 +11,19 @@ phase_generate_ansible_config() {
     local ansible_dir="$SONIC_MGMT_DIR/ansible"
     [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
 
+    _gen_testbed_config "$ansible_dir"
+    _gen_password_file "$ansible_dir"
+    _gen_clab_topology
+
+    log_ok "Ansible/testbed/topology configuration generated"
+}
+
+# README §4.1-4.7 (excludes §4.8's STC/OTG compatibility patch): the
+# ansible-side files describing the DUT/chassis/OTG device inventory,
+# cabling, and lab addressing. Shared by phase_generate_ansible_config
+# (full pipeline) and phase_gen_config (--gen-config, standalone below).
+_gen_testbed_config() {
+    local ansible_dir="$1"
     _gen_devices_csv "$ansible_dir"
     _gen_links_csv "$ansible_dir"
     _gen_inventory "$ansible_dir"
@@ -18,10 +31,20 @@ phase_generate_ansible_config() {
     _gen_secrets_yml "$ansible_dir"
     _patch_group_vars_snappi_yml "$ansible_dir"
     _gen_topo_yml "$ansible_dir"
-    _gen_password_file "$ansible_dir"
-    _gen_clab_topology
+}
 
-    log_ok "Ansible/testbed/topology configuration generated"
+# --gen-config: only the README §4.1-4.7 testbed files above - not the
+# password file or containerlab topology (§3-scoped, not part of §4), and
+# not §4.8's patch (applied separately via phase_sonic_mgmt_source).
+phase_gen_config() {
+    log_step "Generating testbed configuration (README §4.1-4.7, excl. §4.8 patch)"
+
+    local ansible_dir="$SONIC_MGMT_DIR/ansible"
+    [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
+
+    _gen_testbed_config "$ansible_dir"
+
+    log_ok "Testbed configuration generated under $ansible_dir"
 }
 
 _otg_ip() { printf '%s' "$CFG_OTG_SERVICE_IP"; }
@@ -182,12 +205,12 @@ _gen_password_file() {
 
 _gen_clab_topology() {
     mkdir -p "$WORK_DIR"
-    if [[ "$CFG_DUT_MODE" == "virtual" ]]; then
+    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
         _gen_clab_topology_virtual
+        log_info "wrote $CLAB_TOPO_FILE (testcenter.mode=virtual)"
     else
-        _gen_clab_topology_physical
+        log_info "testcenter.mode=physical - STC chassis and DUT are external hardware, no containerlab topology needed"
     fi
-    log_info "wrote $CLAB_TOPO_FILE (dut.mode=${CFG_DUT_MODE})"
 }
 
 _gen_clab_topology_virtual() {
@@ -234,36 +257,3 @@ _gen_clab_topology_virtual() {
     } > "$CLAB_TOPO_FILE"
 }
 
-_gen_clab_topology_physical() {
-    # Physical DUT: the STC container is the ONLY containerlab-managed node.
-    # The physical DUT is never a clab resource and is never touched by
-    # containerlab destroy/deploy - its front-panel ports are real cables,
-    # represented here as "host" links binding the STC container's
-    # interfaces directly to physical host NICs (dut.links[].host_interface).
-    {
-        echo "name: lab"
-        echo ""
-        echo "mgmt:"
-        echo "  network: clab-snappi-sonic"
-        echo "  ipv4-subnet: 192.168.1.0/24"
-        echo ""
-        echo "topology:"
-        echo "  nodes:"
-        echo "    snappi-sonic-stc:"
-        echo "      kind: linux"
-        echo "      image: stc:${CFG_TC_VERSION}"
-        echo "      mgmt-ipv4: ${CFG_STC_CHASSIS_IP}"
-        echo ""
-        echo "  links:"
-        local i
-        for (( i=0; i<CFG_DUT_LINKS_COUNT; i++ )); do
-            sp_var="CFG_DUT_LINK_${i}_STC_PORT"; hi_var="CFG_DUT_LINK_${i}_HOST_IF"
-            local eth=$((i + 1))
-            echo "    - type: host"
-            echo "      endpoints:"
-            echo "        - node: snappi-sonic-stc"
-            echo "          interface: eth${eth}           # ${!sp_var}, cabled to physical DUT"
-            echo "        - host-interface: ${!hi_var}"
-        done
-    } > "$CLAB_TOPO_FILE"
-}

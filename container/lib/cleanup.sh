@@ -64,6 +64,9 @@ cleanup_env_on_failure() {
         return
     fi
     log_step "Run failed - tearing down tool-owned environment (cleanup.env_on_failure=true)"
-    phase_destroy
-    record_phase "Environment cleanup" "OK"
+    if phase_destroy; then
+        record_phase "Environment cleanup" "OK"
+    else
+        record_phase "Environment cleanup" "FAILED" "some tool-owned resources may still be running - see warnings above"
+    fi
 }

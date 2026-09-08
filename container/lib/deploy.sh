@@ -33,8 +33,11 @@ phase_check_version_change() {
 
     if [[ "$CFG_REPLACE_ENV_ON_VERSION_CHANGE" == "1" ]]; then
         log_info "Existing environment will be destroyed and replaced by ${CFG_TC_VERSION}."
-        phase_destroy
-        record_phase "Version change" "REPLACED" "${running_version} -> ${CFG_TC_VERSION}"
+        if phase_destroy; then
+            record_phase "Version change" "REPLACED" "${running_version} -> ${CFG_TC_VERSION}"
+        else
+            record_phase "Version change" "REPLACED" "${running_version} -> ${CFG_TC_VERSION} (teardown had errors - see warnings above; deploy below will attempt to reconcile leftovers)"
+        fi
     else
         log_warn "cleanup.replace_on_version_change is false - keeping the existing ${running_version} environment as-is; per-resource reuse checks below decide what (if anything) gets recreated on ${CFG_TC_VERSION}. Components may end up on mixed versions."
         record_phase "Version change" "KEPT" "${running_version} != ${CFG_TC_VERSION}"
@@ -61,7 +64,11 @@ _phase_deploy_services_impl() {
         _deploy_labserver
         _deploy_otg_service
     fi
-    _deploy_containerlab
+    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+        _deploy_containerlab
+    else
+        log_info "testcenter.mode=physical - STC chassis and DUT are external hardware, skipping containerlab"
+    fi
     _install_dut_ssh_key
     _deploy_allure
     [[ -n "${ALLURE_URL:-}" ]] && phase_export ALLURE_URL "$ALLURE_URL"
@@ -635,6 +642,13 @@ EOF
 phase_destroy() {
     log_step "Tearing down tool-owned resources"
 
+    # Tracks whether every removal below was actually verified to succeed -
+    # phase_destroy's return code (and run_snappi_test.sh's --destroy exit
+    # code, which is just $?) reflects this, and the final message below
+    # says plainly whether anything may still be left running, instead of
+    # unconditionally claiming a clean teardown.
+    local ok=1
+
     # Any previously deployed minigraph is gone once the environment is torn
     # down - a later --pretest/--smoke-test must not skip deploy-mg based on
     # a stale "done" flag from before this teardown.
@@ -642,8 +656,12 @@ phase_destroy() {
 
     if state_owns "$STATE_FILE" OWN_CLAB; then
         log_info "Destroying containerlab topology"
-        containerlab destroy -t "$CLAB_TOPO_FILE" --cleanup || log_warn "containerlab destroy reported an error - check manually"
-        state_set "$STATE_FILE" OWN_CLAB 0
+        if containerlab destroy -t "$CLAB_TOPO_FILE" --cleanup; then
+            state_set "$STATE_FILE" OWN_CLAB 0
+        else
+            log_warn "containerlab destroy reported an error - check manually"
+            ok=0
+        fi
     else
         log_info "containerlab topology not tool-owned - skipping"
     fi
@@ -659,8 +677,14 @@ phase_destroy() {
     if [[ "$CFG_DEPLOY_MODE" != "docker-compose" ]]; then
         if state_owns "$STATE_FILE" OWN_LABSERVER; then
             log_info "Removing labserver container"
-            docker rm -f labserver >/dev/null 2>&1 || true
-            state_set "$STATE_FILE" OWN_LABSERVER 0
+            docker rm -f labserver >/dev/null 2>&1
+            if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx labserver; then
+                log_warn "labserver container still present after 'docker rm -f labserver' - check manually (docker ps -a, docker logs labserver)"
+                ok=0
+            else
+                state_set "$STATE_FILE" OWN_LABSERVER 0
+                log_ok "labserver container removed"
+            fi
         else
             log_info "labserver not tool-owned (provisioned or externally running) - skipping"
         fi
@@ -668,8 +692,13 @@ phase_destroy() {
         if state_owns "$STATE_FILE" OWN_OTG; then
             local d; d="$(state_get "$STATE_FILE" OTG_INSTALL_DIR)"
             log_info "Stopping OTG service"
-            [[ -n "$d" && -x "$d/otgctl" ]] && ( cd "$d" && ./otgctl --shutdown ) || true
-            state_set "$STATE_FILE" OWN_OTG 0
+            if [[ -n "$d" && -x "$d/otgctl" ]] && ( cd "$d" && ./otgctl --shutdown ); then
+                state_set "$STATE_FILE" OWN_OTG 0
+                log_ok "OTG service stopped"
+            else
+                log_warn "OTG service shutdown failed or otgctl was not found at '$d' - check manually (it may still be running)"
+                ok=0
+            fi
         else
             log_info "OTG service not tool-owned - skipping"
         fi
@@ -692,6 +721,13 @@ phase_destroy() {
                 docker rm -f "$cid" >/dev/null 2>&1 || true
             done
         fi
+        if [[ -n "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" 2>/dev/null)" ]]; then
+            log_warn "docker-compose stack (project=$COMPOSE_PROJECT) still has containers after teardown - check manually (docker ps -a --filter label=com.docker.compose.project=$COMPOSE_PROJECT)"
+            ok=0
+        else
+            state_set "$STATE_FILE" OWN_COMPOSE 0
+            log_ok "docker-compose stack removed"
+        fi
         # "down" above never removes images by itself (no --rmi passed), so
         # the OTG image built for this stack is kept by default already -
         # this only matters when the user explicitly wants it gone too.
@@ -703,21 +739,31 @@ phase_destroy() {
             log_info "docker_compose.keep_build_image is false - removing built OTG image (otg:latest)"
             docker rmi otg:latest >/dev/null 2>&1 || true
         fi
-        state_set "$STATE_FILE" OWN_COMPOSE 0
     else
         log_info "docker-compose stack not tool-owned - skipping"
     fi
 
     if state_owns "$STATE_FILE" OWN_ALLURE; then
         log_info "Removing allure containers"
-        ( cd "$WORK_DIR/allure" && docker compose down ) 2>/dev/null || true
-        state_set "$STATE_FILE" OWN_ALLURE 0
+        if ( cd "$WORK_DIR/allure" && docker compose down ) 2>/dev/null; then
+            state_set "$STATE_FILE" OWN_ALLURE 0
+            log_ok "allure containers removed"
+        else
+            log_warn "allure teardown ('docker compose down' in $WORK_DIR/allure) reported an error - check manually"
+            ok=0
+        fi
     fi
 
     if state_owns "$STATE_FILE" OWN_SONIC_MGMT_CONTAINER; then
         log_info "Removing sonic-mgmt container ($SONIC_MGMT_CONTAINER)"
-        docker rm -f "$SONIC_MGMT_CONTAINER" >/dev/null 2>&1 || true
-        state_set "$STATE_FILE" OWN_SONIC_MGMT_CONTAINER 0
+        docker rm -f "$SONIC_MGMT_CONTAINER" >/dev/null 2>&1
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$SONIC_MGMT_CONTAINER"; then
+            log_warn "sonic-mgmt container '$SONIC_MGMT_CONTAINER' still present after 'docker rm -f' - check manually"
+            ok=0
+        else
+            state_set "$STATE_FILE" OWN_SONIC_MGMT_CONTAINER 0
+            log_ok "sonic-mgmt container removed"
+        fi
     else
         log_info "sonic-mgmt container not tool-owned - skipping"
     fi
@@ -762,5 +808,11 @@ phase_destroy() {
         log_info "vrnetlab source/build artifacts not tool-downloaded - skipping"
     fi
 
-    log_ok "Teardown complete (tool-owned resources only)"
+    if [[ "$ok" -eq 1 ]]; then
+        log_ok "Teardown complete (tool-owned resources only)"
+        return 0
+    else
+        log_warn "Teardown finished with errors - some tool-owned resources may still be running (see warnings above)"
+        return 1
+    fi
 }

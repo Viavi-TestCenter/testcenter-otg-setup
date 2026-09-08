@@ -1,7 +1,8 @@
 # Runtime files
 .run_snappi_test/
 clab-*/
-container/images/
+container/images/*
+!container/images/.gitkeep
 
 # Large binary/files
 *.tar.xz
@@ -14,7 +15,8 @@ otgservice*
 
 # ignore logs
 *.log
-./logs/
+./logs/*
+./logs/.gitkeep
 
 # Python
 __pycache__/

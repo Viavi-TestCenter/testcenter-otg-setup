@@ -11,6 +11,17 @@ images:
                                   # (docker images not already loaded/pulled are taken from here)
 
 testcenter:
+  mode: virtual                    # virtual | physical (optional, default virtual).
+                                    # virtual: this tool deploys the STC chassis (and the DUT, see
+                                    #   dut.mode below) itself, as containerlab-managed docker
+                                    #   containers - today's default behavior.
+                                    # physical: the STC chassis AND the DUT are pre-existing real
+                                    #   hardware, reachable over the network at
+                                    #   deployment.stc_chassis.ip / dut.mgmt_ip respectively - this
+                                    #   tool deploys neither, and never runs containerlab at all.
+                                    # MUST match dut.mode below - mixed virtual/physical deployments
+                                    # (e.g. a containerized STC chassis cabled to a physical DUT) are
+                                    # not supported and are rejected at config validation time.
   version: "5.62.0766"                              # -> stc_5.62.0766.tgz, or a VIAVI zip distribution
                                                     # (Spirent_TestCenter_Docker_5.62.0766.zip) containing
                                                     # that same tgz - either is accepted under images.dir,
@@ -22,11 +33,16 @@ testcenter:
                                                     # -> otgservice.5.62.*.sh, e.g.
                                                     # otgservice.5.62.0009-20260112080331.sh), since its
                                                     # patch/build numbering doesn't track STC's.
-  license_server: "@license-server.example.com"     # REQUIRED. SPIRENTD_LICENSE_FILE value.
-                                                    # Examples:
+                                                    # Only consulted when testcenter.mode is virtual - a
+                                                    # physical chassis has its own installed version.
+  license_server: "@license-server.example.com"     # REQUIRED when testcenter.mode is virtual.
+                                                    # SPIRENTD_LICENSE_FILE value. Examples:
                                                     #   @license-server.company.com
                                                     #   @10.10.10.10
                                                     #   license-server.company.com:7443
+                                                    # Not validated/used when testcenter.mode is physical -
+                                                    # a physical chassis typically has its own separate
+                                                    # licensing path.
                                                     #
                                                     # For licensing assistance:
                                                     # https://www.viavisolutions.com/support
@@ -59,16 +75,18 @@ deployment:
                                   # auto-detection (hostname -I) picks the wrong interface.
     port: 50051
   stc_chassis:
-    ip: "192.168.1.2"             # STC chassis container mgmt IP (containerlab-assigned)
+    ip: "192.168.1.2"             # testcenter.mode: virtual  -> STC chassis container mgmt IP (containerlab-assigned)
+                                  # testcenter.mode: physical -> REQUIRED. Management IP of the real STC chassis.
 
 dut:
-  mode: virtual                   # virtual (sonic-vs deployed via containerlab) | physical (existing hardware)
+  mode: virtual                   # virtual (sonic-vs deployed via containerlab) | physical (existing hardware).
+                                  # MUST match testcenter.mode above - see the note there.
   hostname: "sonic-s6100-dut1"
-  mgmt_ip: "192.168.1.3"
+  mgmt_ip: "192.168.1.3"          # testcenter.mode/dut.mode: physical -> REQUIRED. Management IP of the real DUT.
   hwsku: "Force10-S6000"
   iface_speed: "40000"
   total_ports: 32                 # full front-panel port count of the platform (topology port range,
-                                   # independent of how many ports are actually cabled below)
+                                  # independent of how many ports are actually cabled below)
   image: "vrnetlab/sonic_sonic-vs:master"  # virtual mode only
   image_archive: ""                        # virtual mode only; empty = auto-detect sonic-vs-*.tar.gz under images.dir
   build_sonic_vs: true                     # (optional, default true) virtual mode only. If dut.image is not found in
@@ -111,7 +129,11 @@ dut:
       stc_port: Card1/Port1
       bandwidth: 40000
       vlan_id: 1000
-      host_interface: ""          # physical mode ONLY: host NIC name cabled to this STC port (e.g. enp1s0f0)
+      host_interface: ""          # DEPRECATED, unused - was only needed for a containerized STC
+                                   # chassis cabled to a physical DUT, a combination no longer
+                                   # supported (testcenter.mode must match dut.mode). Kept for
+                                   # backward compatibility with existing config.yaml files only;
+                                   # safe to leave empty or remove.
     - dut_port: Ethernet4
       stc_port: Card1/Port2
       bandwidth: 40000

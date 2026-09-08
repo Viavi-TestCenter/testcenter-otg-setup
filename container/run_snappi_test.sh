@@ -26,6 +26,13 @@
 #                          --deploy-mg above); otherwise the prior deploy-mg is reused.
 #   --smoke-test           Run only the Snappi smoke test against an already-deployed
 #                          environment. Same automatic deploy-mg trigger as --pretest.
+#   --gen-config           Regenerate only the testbed config files described in guide
+#                          §4.1-4.7 (device/link CSVs, Ansible inventory, testbed.yaml,
+#                          topology vars, DUT/OTG credentials) - excludes §4.8's STC/OTG
+#                          patch. Requires the sonic-mgmt source checkout to already be
+#                          present (does not deploy/clone anything). Runs no tests, does
+#                          not touch deployed infrastructure, and does not need the
+#                          sonic-mgmt container running.
 #   --no-cleanup          Skip the post-test pytest/ansible cache cleanup. Only affects
 #                          cache state, never deployed services (see --destroy for that).
 #   --destroy             Remove only resources this tool itself created (see the
@@ -34,6 +41,11 @@
 #                          DUT. Runs no tests.
 #   --show-config         Load, validate and print the resolved run configuration,
 #                          then exit. Read-only - no lock, no log dir, no phases run.
+#   --list-versions       Scan images.dir and report which TestCenter (STC) versions
+#                          are currently deliverable/testable (STC + labserver artifacts
+#                          present, OTG service installer matching major.minor), plus
+#                          whether the configured testcenter.version is ready. Read-only -
+#                          no lock, no log dir, no phases run, nothing extracted/downloaded.
 #   -h, --help             Show this help and exit
 #
 # config.yaml's cleanup.env_on_failure (default: true) controls whether a FAILED
@@ -53,11 +65,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
 CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
-MODE="full"          # full | deploy-only | test-only | deploy-mg | pretest | smoke-test | destroy | show-config
+MODE="full"          # full | deploy-only | test-only | deploy-mg | pretest | smoke-test | gen-config | destroy | show-config | list-versions
 SKIP_ENV_CHECK=0
 NO_CLEANUP=0
 
-usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,9 +80,11 @@ while [[ $# -gt 0 ]]; do
         --deploy-mg) MODE="deploy-mg"; shift ;;
         --pretest) MODE="pretest"; shift ;;
         --smoke-test) MODE="smoke-test"; shift ;;
+        --gen-config) MODE="gen-config"; shift ;;
         --no-cleanup) NO_CLEANUP=1; shift ;;
         --destroy) MODE="destroy"; shift ;;
         --show-config) MODE="show-config"; shift ;;
+        --list-versions) MODE="list-versions"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
     esac
@@ -96,17 +110,50 @@ source "$LIB_DIR/run_tests.sh"
 source "$LIB_DIR/cleanup.sh"
 # shellcheck source=lib/report.sh
 source "$LIB_DIR/report.sh"
+# shellcheck source=lib/versions.sh
+source "$LIB_DIR/versions.sh"
 
 load_config
+
+# testcenter.license_server is only actually needed to run real traffic
+# through a virtual (containerized) STC chassis - so this check gates every
+# mode that can reach phase_smoke_test: "full" (no flag), --test-only, and
+# --smoke-test (see the Mode -> phases matrix in README.md §5). --pretest
+# explicitly skips the smoke test, and --deploy-only/--deploy-mg/--gen-config/
+# --destroy/--show-config/--list-versions never reach it either, so none of
+# those need this check.
+if [[ "$CFG_TC_MODE" == "virtual" && ( "$MODE" == "full" || "$MODE" == "test-only" || "$MODE" == "smoke-test" ) ]]; then
+    license_value="$(printf '%s' "$CFG_TC_LICENSE_SERVER" | xargs)"
+    if [[ -z "$license_value" || "$license_value" == "@license-server.example.com" ]]; then
+        die "Invalid configuration: 'testcenter.license_server'.
+
+The value cannot be empty and must not be the default placeholder '@license-server.example.com'. Configure a valid STC license server (for example, '@hostname' or 'host:port').
+
+If you're using a physical STC chassis (which has its own separate licensing path and doesn't need this key), set testcenter.mode: physical (and dut.mode: physical to match) in config.yaml instead.
+
+For licensing assistance, contact VIAVI Support:
+https://www.viavisolutions.com/support"
+    fi
+fi
 
 if [[ "$MODE" == "show-config" ]]; then
     print_run_config
     exit 0
 fi
 
-# Foreground and before anything backgrounds docker calls (run_phase_with_spinner) -
-# see docker_bootstrap_sudo in lib/common.sh.
-docker_bootstrap_sudo
+if [[ "$MODE" == "list-versions" ]]; then
+    phase_list_versions
+    exit 0
+fi
+
+# --gen-config only writes host-side config files - it never runs a docker
+# command itself, so skip the sudo bootstrap below (needed only for the
+# docker calls later phases make).
+if [[ "$MODE" != "gen-config" ]]; then
+    # Foreground and before anything backgrounds docker calls (run_phase_with_spinner) -
+    # see docker_bootstrap_sudo in lib/common.sh.
+    docker_bootstrap_sudo
+fi
 
 LOG_DIR="$LOG_BASE_DIR/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
@@ -125,6 +172,14 @@ log_info "run_snappi_test.sh starting - mode=$MODE config=$CONFIG_FILE log_dir=$
 # ---------------------------------------------------------------- destroy ---
 if [[ "$MODE" == "destroy" ]]; then
     phase_destroy
+    exit $?
+fi
+
+# ------------------------------------------------------------- gen-config ---
+if [[ "$MODE" == "gen-config" ]]; then
+    [[ -d "$SONIC_MGMT_DIR/.git" ]] \
+        || die "sonic-mgmt source not found at $SONIC_MGMT_DIR - --gen-config assumes the environment has already been deployed at least once (run without this option, or --deploy-only, first)."
+    phase_gen_config
     exit $?
 fi
 
@@ -158,12 +213,17 @@ if [[ "$MODE" == "full" || "$MODE" == "deploy-only" ]]; then
     record_phase "Ansible config generation" "OK"
 
     if phase_deploy_services; then
-        record_phase "Service deployment" "OK" "labserver+otg+clab(${CFG_DUT_MODE})"
-        # containerlab always recreates the DUT node above, which wipes out
-        # any minigraph pushed by a previous deploy-mg - so a prior "done"
-        # flag must not survive past this point. Cleared unconditionally
-        # (not just on success) so a failed deploy-mg right after this can't
-        # leave a stale DEPLOY_MG_DONE=1 from an earlier run in place.
+        if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+            record_phase "Service deployment" "OK" "labserver+otg+clab(${CFG_DUT_MODE})"
+        else
+            record_phase "Service deployment" "OK" "labserver+otg (testcenter.mode=physical, no clab)"
+        fi
+        # containerlab (when testcenter.mode=virtual) always recreates the DUT
+        # node above, which wipes out any minigraph pushed by a previous
+        # deploy-mg - so a prior "done" flag must not survive past this point.
+        # Cleared unconditionally (not just on success, and regardless of
+        # mode) so a failed deploy-mg right after this can't leave a stale
+        # DEPLOY_MG_DONE=1 from an earlier run in place.
         state_set "$STATE_FILE" DEPLOY_MG_DONE 0
     else
         record_phase "Service deployment" "FAILED"; phase_report; exit 1
