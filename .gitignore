@@ -15,8 +15,8 @@ otgservice*
 
 # ignore logs
 *.log
-./logs/*
-./logs/.gitkeep
+container/logs/*
+!container/logs/.gitkeep
 
 # Python
 __pycache__/

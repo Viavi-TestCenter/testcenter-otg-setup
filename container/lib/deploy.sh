@@ -210,13 +210,23 @@ _deploy_otg_service() {
     [[ -x "$extracted_dir/otgctl" ]] || die "otgservice installer extracted to $extracted_dir but $extracted_dir/otgctl is missing or not executable"
 
     ( cd "$extracted_dir" && ./otgctl --start )
+
+    # Record ownership right away, as soon as the process actually exists -
+    # NOT after the reachability wait below. otgctl --start above is what
+    # actually launches the service; if the wait times out (slow startup,
+    # transient network hiccup, wrong resolved IP) and we die before ever
+    # recording OWN_OTG/OTG_INSTALL_DIR, the service keeps running but
+    # becomes permanently untracked - a later run just finds it already
+    # reachable via the reuse check above and returns without ever claiming
+    # ownership, so --destroy can never find it to shut it down again.
+    state_set "$STATE_FILE" OWN_OTG 1
+    state_set "$STATE_FILE" OTG_INSTALL_DIR "$extracted_dir"
+
     ( cd "$extracted_dir" && ./otgctl --restserver "${CFG_LABSERVER_IP}:80" )
 
     wait_for_tcp "$CFG_OTG_SERVICE_IP" "$CFG_OTG_SERVICE_PORT" 60 \
-        || die "OTG service did not become reachable on ${CFG_OTG_SERVICE_IP}:${CFG_OTG_SERVICE_PORT} after start"
+        || die "OTG service did not become reachable on ${CFG_OTG_SERVICE_IP}:${CFG_OTG_SERVICE_PORT} after start - it was still started and is now tracked as tool-owned, so --destroy can tear it down"
 
-    state_set "$STATE_FILE" OWN_OTG 1
-    state_set "$STATE_FILE" OTG_INSTALL_DIR "$extracted_dir"
     log_ok "OTG service deployed"
 }
 
