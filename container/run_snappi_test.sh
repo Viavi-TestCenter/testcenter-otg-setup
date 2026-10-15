@@ -204,7 +204,7 @@ if [[ "$MODE" == "full" || "$MODE" == "deploy-only" ]]; then
     fi
 
     phase_sonic_mgmt_source
-    record_phase "sonic-mgmt source" "OK" "${SONIC_MGMT_PATCH_APPLIED:-n/a}"
+    record_phase "sonic-mgmt source" "OK" "patch: ${SONIC_MGMT_PATCH_APPLIED:-n/a}, custom tests: ${SONIC_MGMT_CUSTOM_TESTS_APPLIED:-n/a}"
 
     phase_sonic_mgmt_container
     record_phase "sonic-mgmt container" "OK"

@@ -56,9 +56,11 @@ the automated flow above.
   - [4.6 DUT credentials and group variables](#46-dut-credentials-and-group-variables)
   - [4.7 Verify the inventory loads correctly](#47-verify-the-inventory-loads-correctly)
   - [4.8 Apply the STC/OTG compatibility patch](#48-apply-the-stcotg-compatibility-patch)
+  - [4.9 Apply VIAVI's customized snappi test cases](#49-apply-viavis-customized-snappi-test-cases)
 - [5. Deploy the Minigraph to the DUT](#5-deploy-the-minigraph-to-the-dut)
 - [6. Run the Pretest](#6-run-the-pretest)
 - [7. Run the Snappi Smoke Test](#7-run-the-snappi-smoke-test)
+  - [7.1 Running VIAVI's Other Customized/Validated Snappi Test Suites](#71-running-viavis-other-customizedvalidated-snappi-test-suites)
 - [8. Check the Test Reports](#8-check-the-test-reports)
 - [9. Troubleshooting](#9-troubleshooting)
 - [10. Command Cheat-Sheet](#10-command-cheat-sheet)
@@ -582,6 +584,24 @@ If `git apply --check` reports conflicts, your checkout has diverged from the va
 
 ---
 
+### 4.9 Apply VIAVI's customized snappi test cases
+
+**Source:** [`example/sonic_snappi/tests`](example/sonic_snappi/tests), one directory up from `container/`.
+
+Beyond the §4.8 patch (needed just to get `deploy-mg` and the smoke test running at all on this topology), VIAVI has validated a larger set of `sonic-mgmt`'s `snappi_tests/` suites — `bgp`, `ecn`, `lacp`, `pfc`, `pfcwd`, `qos` — against this Snappi/STC/OTG solution. Some of those test files needed further workarounds (e.g. tolerances/fixtures adjusted for a software-forwarding `sonic-vs` DUT, or for the STC/OTG control-plane path specifically); others passed unmodified and are included as-is once validated. `example/sonic_snappi/tests` mirrors `sonic-mgmt`'s own `tests/` directory layout **exactly** (`conftest.py`, `common/...`, `snappi_tests/<suite>/...`), so every file in it has a same-path counterpart upstream.
+
+**Why a straight overwrite, not another patch:** this set grows as more suites get validated, so regenerating a unified diff on every change would be pure friction. Instead, each file in `example/sonic_snappi/tests` simply replaces the matching upstream file at the identical path — e.g. `example/sonic_snappi/tests/snappi_tests/pfc/test_pfc_pause_lossy_with_snappi.py` overwrites `tests/snappi_tests/pfc/test_pfc_pause_lossy_with_snappi.py`.
+
+**One file affects more than snappi tests:** `conftest.py` is `sonic-mgmt`'s **root** pytest conftest, loaded for every test under `tests/`, not just `snappi_tests/`. Its VIAVI-customized version adds a `snappi` fanout-device case and makes the post-test config-restore step skip waiting for DUT ports to come back up on a TGEN testbed (STC/Keysight), since the traffic-generator session already tore those links down by that point. This is scoped correctly for a checkout dedicated to this Snappi testbed; keep it in mind only if you ever reuse the same checkout for unrelated, non-snappi `sonic-mgmt` test runs.
+
+**Apply it**, from the root of your `sonic-mgmt` checkout (§3.1), after the §4.8 patch:
+```bash
+cp -R /path/to/example/sonic_snappi/tests/. tests/
+```
+This is a plain recursive overwrite (not a patch) — safe to re-run any time you pull an updated `example/sonic_snappi/tests`, and it only touches the specific paths present there; every other file under `tests/` is untouched. The automated `run_snappi_test.sh` does this for you on every `full`/`--deploy-only` run when `sonic_mgmt.custom_tests.overwrite: true` in `config.yaml` (see [`container/README.md` §6](container/README.md#6-configyaml-reference) and [§7.3](container/README.md#7-what-each-phase-does)).
+
+---
+
 ## 5. Deploy the Minigraph to the DUT
 
 ```bash
@@ -676,6 +696,35 @@ Passing this test is a quick confirmation that cabling, the OTG/STC control-plan
 | `Tx != Rx` / packet loss on one flow | Cabling doesn't match `sonic_snappi-sonic_links.csv`, or a VLAN/priority mismatch on that link. |
 
 See §9 for the rest of the general troubleshooting steps (unreachable ports, ARP hangs, stale caches).
+
+---
+
+### 7.1 Running VIAVI's Other Customized/Validated Snappi Test Suites
+
+Once §4.9's customized test files are in place (automatically, via `config.yaml`'s `sonic_mgmt.custom_tests.overwrite: true`, or manually per §4.9) and `deploy-mg` (§5) has run, any of the validated `snappi_tests/` suites can be run the same way as the §7 smoke test — just point `pytest` at a different path:
+
+```bash
+cd sonic-mgmt/tests
+
+export ANSIBLE_CONFIG=../ansible
+export ANSIBLE_LIBRARY=../ansible
+
+python3 -m pytest -s \
+  --inventory ../ansible/snappi-sonic \
+  --host-pattern sonic-s6100-dut1 \
+  --testbed vms-snappi-sonic \
+  --testbed_file ../ansible/testbed.yaml \
+  --show-capture=stdout --log-cli-level info --showlocals -ra \
+  --allow_recover --skip_sanity --disable_loganalyzer \
+  --ignore-conditional-mark \
+  snappi_tests/pfc/test_pfc_pause_lossy_with_snappi.py
+```
+
+`--testbed`/`--host-pattern`/`--inventory` must match §4's values, same as §6/§7. Target a single file, or a whole suite directory (e.g. `snappi_tests/pfc/`) to run everything validated under it.
+
+`--ignore-conditional-mark` is required here for the same reason §7 needs it: against a virtual `sonic-vs` DUT, upstream's shared `conditional_mark` rule skips the entire `snappi_tests/` prefix. Unlike §7's single-file smoke test, this flag now also applies to whichever broader suite you target — safe to use **only** for the suites under `example/sonic_snappi/tests/snappi_tests/` (§4.9), since those are the ones VIAVI has actually validated against this topology; don't blanket-apply it to the rest of upstream's `snappi_tests/`, which hasn't been.
+
+Via the automated tool, run the environment up to (but not including) the smoke test (`./run_snappi_test.sh --deploy-only` then `--test-only` or `--deploy-mg`), then `docker exec` into the running `snappi-sonic-mgmt` container and run the command above from `/data/<sonic-mgmt-dir-name>/tests` inside it — there's no dedicated `run_snappi_test.sh` flag for an arbitrary suite, only `--smoke-test` for `snappi_tests/test_snappi.py` specifically.
 
 ---
 

@@ -174,6 +174,13 @@ def main():
         require(cfg, "sonic_mgmt.patch.file", str, allow_empty=False)
     # Optional, defaults to False - kept out of require() so existing
     # config.yaml files from before this option existed keep validating.
+    custom_tests_overwrite = cfg.get("sonic_mgmt", {}).get("custom_tests", {}).get("overwrite", False)
+    if not isinstance(custom_tests_overwrite, bool):
+        err("sonic_mgmt.custom_tests.overwrite must be a boolean")
+    if custom_tests_overwrite:
+        require(cfg, "sonic_mgmt.custom_tests.source_dir", str, allow_empty=False)
+    # Optional, defaults to False - kept out of require() so existing
+    # config.yaml files from before this option existed keep validating.
     keep_sonic_mgmt_src = cfg.get("sonic_mgmt", {}).get("keep_sonic_mgmt_src", False)
     if not isinstance(keep_sonic_mgmt_src, bool):
         err("sonic_mgmt.keep_sonic_mgmt_src must be a boolean")
@@ -303,6 +310,8 @@ def emit(cfg):
     scalar("CFG_SONIC_MGMT_BASELINE_COMMIT", get("sonic_mgmt.baseline_commit"))
     scalar("CFG_SONIC_MGMT_PATCH_APPLY", "1" if get("sonic_mgmt.patch.apply") else "0")
     scalar("CFG_SONIC_MGMT_PATCH_FILE", get("sonic_mgmt.patch.file"))
+    scalar("CFG_SONIC_MGMT_CUSTOM_TESTS_OVERWRITE", "1" if get("sonic_mgmt.custom_tests.overwrite", False) else "0")
+    scalar("CFG_SONIC_MGMT_CUSTOM_TESTS_DIR", get("sonic_mgmt.custom_tests.source_dir"))
     scalar("CFG_SONIC_MGMT_KEEP_SRC", "1" if get("sonic_mgmt.keep_sonic_mgmt_src", False) else "0")
 
     scalar("CFG_ALLURE_ENABLED", "1" if get("allure.enabled") else "0")
