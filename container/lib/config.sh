@@ -54,6 +54,7 @@ load_config() {
     LOG_BASE_DIR="${CFG_LOG_DIR:+$(resolve_path "$CFG_LOG_DIR")}"
     LOG_BASE_DIR="${LOG_BASE_DIR:-$(pwd)/logs}"
     PATCH_FILE="$(resolve_path "$CFG_SONIC_MGMT_PATCH_FILE")"
+    CUSTOM_TESTS_DIR="${CFG_SONIC_MGMT_CUSTOM_TESTS_DIR:+$(resolve_path "$CFG_SONIC_MGMT_CUSTOM_TESTS_DIR")}"
     SONIC_MGMT_DIR="${CFG_SONIC_MGMT_SOURCE_DIR:+$(resolve_path "$CFG_SONIC_MGMT_SOURCE_DIR")}"
     SONIC_MGMT_DIR="${SONIC_MGMT_DIR:-$WORK_DIR/sonic-mgmt}"
     SONIC_MGMT_USER_PROVIDED=0

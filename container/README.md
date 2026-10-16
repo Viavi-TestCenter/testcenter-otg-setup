@@ -441,6 +441,8 @@ of the chassis.
 | `baseline_commit` | The exact commit the STC/OTG patch is validated against. |
 | `patch.apply` | Explicit toggle for applying the compatibility patch. Never applied automatically to a dirty existing checkout either way. |
 | `patch.file` | Path to the patch file. |
+| `custom_tests.overwrite` | Optional, default `false`. If `true`, overwrite upstream snappi test scripts under the checkout's `tests/` tree with VIAVI-customized versions containing the workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG solution — see [§7.3](#7-what-each-phase-does). Never applied automatically to a dirty existing checkout either way (same rule as `patch.apply`). |
+| `custom_tests.source_dir` | Directory mirroring sonic-mgmt's `tests/` layout 1:1 (e.g. `snappi_tests/pfc/...`, `common/snappi_tests/...`, `conftest.py`) — only consulted when `custom_tests.overwrite: true`. Default: [`../example/sonic_snappi/tests`](../example/sonic_snappi/tests), the VIAVI-validated set shipped alongside this container solution. |
 | `keep_sonic_mgmt_src` | Optional, default `false`. If `true`, `--destroy` (and the same-scope teardowns from `cleanup.env_on_failure`/`replace_on_version_change`) will **not** delete a tool-owned sonic-mgmt clone (`source_dir` empty) — every other tool-owned resource is still removed. Has no effect on a user-supplied checkout (`source_dir` set), which this tool never deletes regardless. See [§10](#10---destroy-and-ownership-tracking). |
 
 ### `cleanup`
@@ -535,8 +537,10 @@ a different one.
 ### 7.3 sonic-mgmt source (`lib/sonic_mgmt.sh::phase_sonic_mgmt_source`)
 - **User-supplied checkout** (`sonic_mgmt.source_dir` set): never checked
   out or reset by this tool. If the tree is dirty, it's left completely
-  untouched (no checkout, no patch). If clean and `patch.apply: true`, the
-  STC/OTG patch is applied if not already present.
+  untouched (no checkout, no patch, no custom-tests overwrite). If clean and
+  `patch.apply: true`, the STC/OTG patch is applied if not already present,
+  then (if `custom_tests.overwrite: true`) the VIAVI-customized snappi test
+  files are overwritten in too.
 - **Tool-owned checkout** (`source_dir` empty): if already on the exact
   `baseline_commit`, the checkout is reused as-is — its working tree is
   expected to be permanently dirty after the first patch + config
@@ -549,6 +553,20 @@ a different one.
 - **Patch application** is idempotent: it first checks whether the patch
   reverse-applies cleanly (meaning it's already in place) before attempting
   a forward apply.
+- **Custom snappi test overwrite** (`custom_tests.overwrite: true`, after the
+  patch above): recursively copies `custom_tests.source_dir` — which mirrors
+  sonic-mgmt's `tests/` layout 1:1 — onto the checkout's `tests/` directory,
+  overwriting only the matching paths (e.g. `tests/snappi_tests/pfc/test_*.py`,
+  `tests/common/snappi_tests/*.py`, `tests/conftest.py`) with VIAVI's
+  validated/customized versions. This isn't a tracked patch with an "already
+  applied" check — it's a plain overwrite, re-run every `full`/`--deploy-only`
+  run, so the checkout always matches whatever is currently in `source_dir`.
+  `tests/conftest.py` in particular is sonic-mgmt's **root** pytest conftest
+  (shared by every test suite under `tests/`, not just `snappi_tests/`), so
+  if it's one of the overwritten paths its fixture/behavior changes apply
+  checkout-wide — fine for this tool-owned/dedicated checkout, but worth
+  knowing if you ever point `sonic_mgmt.source_dir` at the same checkout to
+  run unrelated, non-snappi sonic-mgmt test suites.
 
 ### 7.4 sonic-mgmt container (`lib/sonic_mgmt.sh::phase_sonic_mgmt_container`)
 If a container named `snappi-sonic-mgmt` is already running with the source
@@ -679,6 +697,7 @@ environment is destroyed up front and every row below deploys fresh.
 |---|---|
 | Host packages (Docker, containerlab, etc.) | Reused — never reinstalled if already meeting the minimum requirement. |
 | sonic-mgmt checkout | Reused if already on the baseline commit (tool-owned) or always left alone (user-supplied). |
+| VIAVI custom snappi tests (`custom_tests.overwrite`) | Not "reused" in the same sense — re-synced from `source_dir` on every run, so it can't drift out of sync with it (same philosophy as the Ansible/testbed/topology files row below). |
 | sonic-mgmt container | Reused if running and correctly mounted; restarted if stopped; only recreated otherwise. |
 | Labserver (`standalone`/`provisioned`) | Reused if running and responding; restarted if stopped; otherwise recreated from an already-loaded docker image if one is present, and only from the artifact file as a last resort. Reuse is never blocked on version — if the running container's image doesn't match the version derived from `testcenter.version`, the script warns and continues with it anyway (see §2, and §7.0 for the one case that overrides this by tearing it down anyway). |
 | OTG service (`standalone`/`provisioned`) | Reused if already reachable on the configured port. |
@@ -781,6 +800,7 @@ the Allure report URL for that run.
 | `Ambiguous artifact match for ... under $IMAGES_DIR` | Multiple files matched a version glob (e.g. two `stc_*.tgz`). | Pin the exact version in `config.yaml` so exactly one file matches, or remove the stale one. |
 | `Patch does not apply cleanly` | The sonic-mgmt checkout has diverged from `sonic_mgmt.baseline_commit`. | Let the tool re-checkout the baseline commit (tool-owned checkouts do this automatically when clean), or update the patch for your commit. |
 | `Tool-owned sonic-mgmt checkout ... has uncommitted changes - refusing to switch commits` | The checkout is both on the wrong commit and dirty. | Investigate/reset it manually, or delete the directory to let the tool re-clone. |
+| `Custom tests directory not found: ...` | `sonic_mgmt.custom_tests.overwrite: true` but `custom_tests.source_dir` doesn't resolve to an existing directory. | Check the path (relative paths resolve against `config.yaml`'s own directory) — default is `../example/sonic_snappi/tests`, shipped alongside this container solution. |
 | `connect() failed` from the Snappi client during the smoke test | OTG API server IP/port unreachable. | Check `otg.rest_port`/`deployment.otg_service.ip` in `config.yaml` and the OTG container's network reachability. |
 | Ports stuck "Reserved" | Labserver/STC chassis reservation conflict. | Release/re-reserve ports on the chassis, or restart the Labserver container. |
 | `docker compose up failed: host port ... is already in use` (`deployment.mode: docker-compose`) | A previous labserver/OTG deployment (this tool's own, or a manual one) is still holding that host port — `_preflight_check_compose_conflicts` only catches a foreign container literally named `labserver`/`otg`; a stale container under some other name, or an unrelated process, isn't caught until `docker compose up` itself fails to bind. | Run `./run_snappi_test.sh --destroy` to remove any tool-owned resources, confirm nothing else is bound to the port named in the error (`ss -tlnp \| grep <port>`), then re-run. |

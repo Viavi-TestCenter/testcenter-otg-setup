@@ -157,6 +157,18 @@ sonic_mgmt:
     apply: true                    # explicit toggle - set false to manage the patch yourself.
                                    # Never applied automatically to a dirty existing checkout either way.
     file: "./snappi-stc-patch-v0.1.patch"
+  custom_tests:
+    overwrite: true                # (optional, default false) Overwrite upstream snappi test scripts under
+                                   # the checkout's tests/ tree with VIAVI-customized versions containing the
+                                   # workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG
+                                   # solution. source_dir below mirrors sonic-mgmt's tests/ layout 1:1 (e.g.
+                                   # tests/snappi_tests/pfc/..., tests/common/snappi_tests/..., tests/conftest.py)
+                                   # - only overwrites paths that already exist upstream, re-synced on every
+                                   # full/--deploy-only run (not patch-tracked, so it always matches source_dir
+                                   # exactly rather than needing an "already applied" check). Never applied to
+                                   # a dirty user-supplied checkout, same rule as patch.apply above.
+    source_dir: "../example/sonic_snappi/tests"   # directory mirroring sonic-mgmt's tests/ layout;
+                                                  # relative paths resolve against this file's own directory
   keep_sonic_mgmt_src: true         # (optional, default false) If true, --destroy (and
                                     # cleanup.env_on_failure/replace_on_version_change teardowns)
                                     # will NOT delete a tool-owned sonic-mgmt clone (source_dir

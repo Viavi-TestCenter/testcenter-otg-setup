@@ -24,6 +24,7 @@ phase_sonic_mgmt_source() {
             log_info "sonic_mgmt.patch.apply is false - leaving the existing checkout's patch state as-is."
             SONIC_MGMT_PATCH_APPLIED="skipped (apply=false)"
         fi
+        _sonic_mgmt_overwrite_custom_tests_if_needed
         return
     fi
 
@@ -70,6 +71,7 @@ phase_sonic_mgmt_source() {
         log_info "sonic_mgmt.patch.apply is false - skipping the STC/OTG compatibility patch."
         SONIC_MGMT_PATCH_APPLIED="skipped (apply=false)"
     fi
+    _sonic_mgmt_overwrite_custom_tests_if_needed
 }
 
 _sonic_mgmt_apply_patch_if_needed() {
@@ -91,6 +93,29 @@ $out"
     git -C "$SONIC_MGMT_DIR" apply "$PATCH_FILE"
     log_ok "Applied snappi-stc-patch: $(basename "$PATCH_FILE")"
     SONIC_MGMT_PATCH_APPLIED="applied"
+}
+
+# Overwrites upstream snappi test files under $SONIC_MGMT_DIR/tests with
+# VIAVI-customized versions from sonic_mgmt.custom_tests.source_dir. Unlike
+# the STC/OTG patch above, this isn't a diff with an "already applied" state
+# to check - source_dir mirrors tests/ 1:1, so re-syncing it on every run is
+# cheap, idempotent, and guarantees the checkout never drifts from whatever
+# is currently in source_dir. A plain recursive copy only overwrites/adds the
+# exact paths present in source_dir; every other file under tests/ (the vast
+# majority of the upstream suite) is left untouched.
+_sonic_mgmt_overwrite_custom_tests_if_needed() {
+    if [[ "$CFG_SONIC_MGMT_CUSTOM_TESTS_OVERWRITE" != "1" ]]; then
+        log_info "sonic_mgmt.custom_tests.overwrite is false - leaving upstream snappi test scripts as-is."
+        SONIC_MGMT_CUSTOM_TESTS_APPLIED="skipped (overwrite=false)"
+        return
+    fi
+
+    [[ -d "$CUSTOM_TESTS_DIR" ]] || die "Custom tests directory not found: $CUSTOM_TESTS_DIR (sonic_mgmt.custom_tests.source_dir in config.yaml)"
+
+    local count; count=$(find "$CUSTOM_TESTS_DIR" -type f | wc -l)
+    cp -R "$CUSTOM_TESTS_DIR/." "$SONIC_MGMT_DIR/tests/"
+    log_ok "Overwrote $count upstream snappi test file(s) under $SONIC_MGMT_DIR/tests with VIAVI-customized versions from $CUSTOM_TESTS_DIR"
+    SONIC_MGMT_CUSTOM_TESTS_APPLIED="applied ($count files)"
 }
 
 phase_sonic_mgmt_container() {

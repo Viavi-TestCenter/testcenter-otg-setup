@@ -51,6 +51,11 @@ print_run_config() {
     else
         row "STC/OTG patch" "Disabled"
     fi
+    if [[ "$CFG_SONIC_MGMT_CUSTOM_TESTS_OVERWRITE" == "1" ]]; then
+        row "VIAVI customized snappi tests" "Enabled ($CFG_SONIC_MGMT_CUSTOM_TESTS_DIR)"
+    else
+        row "VIAVI customized snappi tests" "Disabled"
+    fi
     if [[ "$SONIC_MGMT_USER_PROVIDED" -eq 1 ]]; then
         row "Keep source on destroy" "N/A (user-supplied checkout, never deleted by this tool)"
     elif [[ "$CFG_SONIC_MGMT_KEEP_SRC" == "1" ]]; then
