@@ -37,7 +37,7 @@ phase_list_versions() {
             ver="${BASH_REMATCH[1]}"
             otg_files["$ver"]="${otg_files[$ver]:+${otg_files[$ver]}, }$base"
         fi
-    done < <(find "$IMAGES_DIR" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null)
+    done < <(find -H "$IMAGES_DIR" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null)
 
     # A version already imported into 'docker images' needs no artifact file
     # at all (same reuse rule phase_check_artifacts/deploy.sh apply) - fold

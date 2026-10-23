@@ -488,7 +488,7 @@ _find_exact_artifact() {
     local matches=()
     for pat in $patterns; do
         while IFS= read -r -d '' f; do matches+=("$f"); done \
-            < <(find "$IMAGES_DIR" -maxdepth 1 -iname "$pat" -print0 2>/dev/null)
+            < <(find -H "$IMAGES_DIR" -maxdepth 1 -iname "$pat" -print0 2>/dev/null)
     done
     # de-duplicate
     if [[ ${#matches[@]} -gt 0 ]]; then

@@ -151,7 +151,7 @@ phase_sonic_mgmt_container() {
 
     if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "$image"; then
         local local_tar
-        local_tar=$(find "$IMAGES_DIR" -maxdepth 1 -iname 'docker-sonic-mgmt*.tar.gz' -print -quit 2>/dev/null)
+        local_tar=$(find -H "$IMAGES_DIR" -maxdepth 1 -iname 'docker-sonic-mgmt*.tar.gz' -print -quit 2>/dev/null)
         if [[ -n "$local_tar" ]]; then
             log_info "Loading sonic-mgmt image from $local_tar"
             docker load -i "$local_tar"
