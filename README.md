@@ -139,7 +139,7 @@ If you're using the automated `container/run_snappi_test.sh` workflow, once thes
 ### 3.1 Get the sonic-mgmt repository
 
 ```bash
-git clone -b master --single-branch git@github.com:sonic-net/sonic-mgmt.git
+git clone -b master --single-branch https://github.com/sonic-net/sonic-mgmt.git
 cd sonic-mgmt
 ```
 
