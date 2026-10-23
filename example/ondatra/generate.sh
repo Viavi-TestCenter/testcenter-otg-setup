@@ -10,7 +10,7 @@ cd featureprofiles
 
 mv stcfeature stcfeature~
 git init
-#git remote add origin git@github.com:openconfig/featureprofiles.git
+#git remote add origin https://github.com/openconfig/featureprofiles.git
 git remote add origin https://github.com/openconfig/featureprofiles.git 
 git pull origin $COMMIT --allow-unrelated-histories
 mv stcfeature~ stcfeature

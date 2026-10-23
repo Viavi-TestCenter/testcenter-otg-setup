@@ -150,7 +150,7 @@ otg:
 sonic_mgmt:
   source_dir: ""                  # empty => clone fresh under workspace/sonic-mgmt next to this config;
                                    # set to an existing checkout (e.g. wk_snappi_container_test) to reuse it as-is
-  repo: "git@github.com:sonic-net/sonic-mgmt.git"
+  repo: "https://github.com/sonic-net/sonic-mgmt.git"
   branch: "master"
   baseline_commit: "91d8be388"    # patch is only validated against this exact commit
   patch:
