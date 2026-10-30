@@ -202,7 +202,10 @@ _deploy_otg_service() {
 
     local installer="$OTGSERVICE_DIR/$(basename "$OTGSERVICE_FILE")"
     chmod +x "$installer"
-    ( cd "$OTGSERVICE_DIR" && "./$(basename "$OTGSERVICE_FILE")" )
+    # --nox11: Makeself otherwise tries to respawn itself in an X terminal when
+    # there is no tty and DISPLAY is set (e.g. WSLg + xset installed); with no
+    # terminal emulator found that becomes `exec -e ...` and extraction fails.
+    ( cd "$OTGSERVICE_DIR" && "./$(basename "$OTGSERVICE_FILE")" --nox11 )
 
     local extracted_dir
     extracted_dir="$(find "$OTGSERVICE_DIR" -mindepth 1 -maxdepth 1 -type d -iname 'otgservice*' -print -quit)"
