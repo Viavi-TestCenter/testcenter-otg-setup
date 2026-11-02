@@ -15,7 +15,7 @@ The solution supports deployment of sonic-mgmt, Labserver, the OTG API Service, 
 > — `sonic-vs` or community-image hardware. It is **not validated for Enterprise
 > SONiC or other vendor SONiC forks**, whose DUT-side Python APIs and config CLI
 > can differ from community SONiC and break stock sonic-mgmt modules. See the
-> `deploy-mg` warning in [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
+> `deploy-mg` warning in [§7.8](#78-deploy-mg-pretest-smoke-test-librun_testssh).
 
 > **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.** With
 > `dut.mode: physical`, the `deploy-mg` step (run by the full run, `--test-only`,
@@ -102,7 +102,7 @@ Prompts") for details.
 The OTG API Docker and Labserver can be deployed either as two independent
 containers (`deployment.mode: standalone`) or together as one Docker Compose
 stack (`deployment.mode: docker-compose`) — see [§6](#6-configyaml-reference)
-and [§7.6](#7-what-each-phase-does). Either way, the relationship shown above
+and [§7.6](#76-lab-services-deployment-libdeployshphase_deploy_services). Either way, the relationship shown above
 (OTG talks to Labserver over REST) is the same.
 
 ---
@@ -175,7 +175,7 @@ and a final rollup line of every version that's fully ready right now — see
 The Labserver image and OTG service installer above are required for
 **both** `deployment.mode: standalone` and `deployment.mode: docker-compose`
 — the difference between the two is only *how* they're deployed, not which
-artifacts are needed (see [§7.6](#7-what-each-phase-does)).
+artifacts are needed (see [§7.6](#76-lab-services-deployment-libdeployshphase_deploy_services)).
 
 **`deployment.mode: docker-compose` only** — this mode uses the
 [`testcenter-otg-setup`](https://github.com/Viavi-TestCenter/testcenter-otg-setup)
@@ -197,7 +197,7 @@ a common source of control-plane connection failures. Each of these is
 checked in the same order before the artifact file is ever required:
 already running (or, for the Labserver, already loaded into `docker
 images`) → nothing to do; only if neither is true does the script fall back
-to the artifact file (see [§7.2](#7-what-each-phase-does)).
+to the artifact file (see [§7.2](#72-artifact-validation-libenv_checkshphase_check_artifacts)).
 
 When `testcenter.mode: virtual`, the STC chassis container is always rebuilt
 on the configured `testcenter.version` (see §8), so it can never silently
@@ -211,7 +211,7 @@ mismatched Labserver rather than recreating it — recreating in place risks
 dropping live sessions/state on it. To force the Labserver onto the
 configured version, remove it yourself first (`docker rm -f labserver`, or
 `--destroy` if it's tool-owned) before re-running — or bump
-`testcenter.version` itself, which [§7.0](#7-what-each-phase-does)'s
+`testcenter.version` itself, which [§7.0](#70-version-change-check-libdeployshphase_check_version_change)'s
 version-change check will do for you automatically by default.
 
 **License server (`testcenter.mode: virtual` only):** `testcenter.license_server` (§6) is
@@ -242,7 +242,7 @@ fallback. Skip this entirely for `dut.mode: physical`.
 **sonic-mgmt source:** leave `sonic_mgmt.source_dir` empty to let the script
 clone and manage its own checkout, or point it at an existing checkout (e.g.
 one you already use for other test work) to reuse as-is — see
-[§7.3](#7-what-each-phase-does) for exactly how each mode behaves.
+[§7.3](#73-sonic-mgmt-source-libsonic_mgmtshphase_sonic_mgmt_source) for exactly how each mode behaves.
 
 ---
 
@@ -256,7 +256,7 @@ one you already use for other test work) to reuse as-is — see
 > `config_db.json`) and know how to restore it, (3) make sure `dut.hwsku`,
 > `dut.iface_speed`, `dut.total_ports`, `dut.links[]` and `topology.*` match the
 > real platform, and (4) confirm the DUT runs community SONiC. Details:
-> [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
+> [§7.8](#78-deploy-mg-pretest-smoke-test-librun_testssh).
 
 ```bash
 cd container
@@ -354,7 +354,7 @@ leave that clone in place too.
 > **⚠️ Hardware warning:** with `dut.mode: physical`, every mode except `--deploy-only`,
 > `--gen-config`, `--destroy`, `--show-config` and `--list-versions` runs `deploy-mg`
 > (`--pretest`/`--smoke-test` only if it hasn't already run), which **overwrites the
-> real DUT's running configuration** (the default full run included). See [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
+> real DUT's running configuration** (the default full run included). See [§7.8](#78-deploy-mg-pretest-smoke-test-librun_testssh).
 
 | Option | Effect |
 |---|---|
@@ -467,12 +467,12 @@ of the chassis.
 ### `sonic_mgmt`
 | Field | Meaning |
 |---|---|
-| `source_dir` | Empty ⇒ clone fresh under `.run_snappi_test/sonic-mgmt`. Set to an existing checkout to reuse it **as-is** (see [§7.3](#7-what-each-phase-does)). |
+| `source_dir` | Empty ⇒ clone fresh under `.run_snappi_test/sonic-mgmt`. Set to an existing checkout to reuse it **as-is** (see [§7.3](#73-sonic-mgmt-source-libsonic_mgmtshphase_sonic_mgmt_source)). |
 | `repo`, `branch` | Clone source, tool-owned checkouts only. |
 | `baseline_commit` | The exact commit the STC/OTG patch is validated against. |
 | `patch.apply` | Explicit toggle for applying the compatibility patch. Never applied automatically to a dirty existing checkout either way. |
 | `patch.file` | Path to the patch file. |
-| `custom_tests.overwrite` | Optional, default `false`. If `true`, overwrite upstream snappi test scripts under the checkout's `tests/` tree with VIAVI-customized versions containing the workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG solution — see [§7.3](#7-what-each-phase-does). Never applied automatically to a dirty existing checkout either way (same rule as `patch.apply`). |
+| `custom_tests.overwrite` | Optional, default `false`. If `true`, overwrite upstream snappi test scripts under the checkout's `tests/` tree with VIAVI-customized versions containing the workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG solution — see [§7.3](#73-sonic-mgmt-source-libsonic_mgmtshphase_sonic_mgmt_source). Never applied automatically to a dirty existing checkout either way (same rule as `patch.apply`). |
 | `custom_tests.source_dir` | Directory mirroring sonic-mgmt's `tests/` layout 1:1 (e.g. `snappi_tests/pfc/...`, `common/snappi_tests/...`, `conftest.py`) — only consulted when `custom_tests.overwrite: true`. Default: [`../example/sonic_snappi/tests`](../example/sonic_snappi/tests), the VIAVI-validated set shipped alongside this container solution. |
 | `keep_sonic_mgmt_src` | Optional, default `false`. If `true`, `--destroy` (and the same-scope teardowns from `cleanup.env_on_failure`/`replace_on_version_change`) will **not** delete a tool-owned sonic-mgmt clone (`source_dir` empty) — every other tool-owned resource is still removed. Has no effect on a user-supplied checkout (`source_dir` set), which this tool never deletes regardless. See [§10](#10---destroy-and-ownership-tracking). |
 
@@ -480,7 +480,7 @@ of the chassis.
 | Field | Meaning |
 |---|---|
 | `env_on_failure` | After deploy-mg or pretest/smoke test **fails**, automatically tear down tool-owned environment resources (same scope as `--destroy`). A successful run always leaves the environment deployed for reuse, regardless of this setting. Doesn't apply to `--deploy-only`, which always keeps the environment. |
-| `replace_on_version_change` | Optional, default `true`. If a tool-owned STC chassis container from a previous run is still deployed on a different `testcenter.version` than this run's config, automatically tear down the whole tool-owned environment (same scope as `--destroy`) before deploying fresh on the new version. Set `false` to keep the old environment instead and fall back to each resource's normal reuse check — this can leave components on mixed versions. See [§7.0](#7-what-each-phase-does) and [§8](#8-reuse--idempotency-behavior). |
+| `replace_on_version_change` | Optional, default `true`. If a tool-owned STC chassis container from a previous run is still deployed on a different `testcenter.version` than this run's config, automatically tear down the whole tool-owned environment (same scope as `--destroy`) before deploying fresh on the new version. Set `false` to keep the old environment instead and fall back to each resource's normal reuse check — this can leave components on mixed versions. See [§7.0](#70-version-change-check-libdeployshphase_check_version_change) and [§8](#8-reuse--idempotency-behavior). |
 
 ### `logging`
 | Field | Meaning |
@@ -504,7 +504,7 @@ of the chassis.
 ### `topology`
 | Field | Meaning |
 |---|---|
-| `name` | Topology name — generates `vars/topo_<name>.yml`. Keep this an **exact** name (not just containing `ptf32`) — see the patch note in [§7.3](#7-what-each-phase-does). |
+| `name` | Topology name — generates `vars/topo_<name>.yml`. Keep this an **exact** name (not just containing `ptf32`) — see the patch note in [§7.3](#73-sonic-mgmt-source-libsonic_mgmtshphase_sonic_mgmt_source). |
 | `dut_type` | Device role for minigraph generation; `ToRRouter` gives front-panel ports the VLAN/L3 addressing a Snappi test port needs. |
 | `vlan.id/prefix/prefix_v6/tag/mac` | The VLAN that owns the host-facing test ports and the subnet minigraph generation assigns test IPs from. |
 
@@ -530,7 +530,7 @@ and then, governed by `cleanup.replace_on_version_change` (default `true`),
 either tears down the whole tool-owned environment (`phase_destroy` — same
 scope as `--destroy`) so every phase below deploys fresh on the new version,
 or (if set `false`) just warns and leaves it to each resource's own reuse
-check in [§7.6](#7-what-each-phase-does) — which can leave components on
+check in [§7.6](#76-lab-services-deployment-libdeployshphase_deploy_services) — which can leave components on
 mixed versions, since only the containerlab STC node is unconditionally
 rebuilt every run regardless of version. No tool-owned deployment yet (first
 run, or nothing tracked in `.run_snappi_test/state.env`) → silently skipped.
@@ -736,7 +736,7 @@ phase-by-phase `SNAPPI TEST SUMMARY` and writes a machine-readable
 ## 8. Reuse & Idempotency Behavior
 
 Summary of what gets reused vs. always rebuilt on a re-run **once past the
-[§7.0](#7-what-each-phase-does) version-change check** — i.e. this table
+[§7.0](#70-version-change-check-libdeployshphase_check_version_change) version-change check** — i.e. this table
 describes normal re-runs on an unchanged `testcenter.version`, or a changed
 one with `cleanup.replace_on_version_change: false`. On a version bump with
 the (default) `true` setting, none of this applies: the whole tool-owned
