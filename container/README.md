@@ -405,7 +405,7 @@ needs to match `version`'s leading `major.minor` and is glob-matched as
 | `docker_compose.keep_build_image` | Only used when `mode: docker-compose`. Optional, default `true`. `--destroy` (and same-scope teardowns) leave the OTG image built for this stack (`otg:latest`) in place, so the next deploy skips rebuilding it from the installer. Set `false` to also remove it on destroy. Never affects Labserver images — see [§8](#8-reuse--idempotency-behavior). |
 | `labserver.ip` | Reachable IP of the Labserver. |
 | `otg_service.ip` / `.port` | Reachable IP/port of the OTG API service. |
-| `stc_chassis.ip` | `testcenter.mode: virtual` — STC chassis container's management IP (containerlab-assigned). `testcenter.mode: physical` — REQUIRED: management IP of the real STC chassis. |
+| `stc_chassis.ip` | `testcenter.mode: virtual` — STC chassis container's management IP — set statically on the containerlab node (not auto-assigned by containerlab); must be inside the topology's `192.168.1.0/24` management subnet and distinct from `dut.mgmt_ip`, the default is fine. `testcenter.mode: physical` — REQUIRED: management IP of the real STC chassis. |
 
 Whether the STC chassis (`stc_chassis.ip`) is deployed via containerlab is
 governed by `testcenter.mode` (§6 above), not `deployment.mode` — the latter
@@ -416,7 +416,7 @@ of the chassis.
 | Field | Meaning |
 |---|---|
 | `mode` | `virtual` (deploy `sonic-vs` via containerlab) or `physical` (existing hardware, management IP required — see `mgmt_ip` below). **Must equal `testcenter.mode`** (§6 above) — mixed deployments are rejected at config validation. |
-| `hostname`, `mgmt_ip`, `hwsku`, `iface_speed` | DUT identity, matched against the Ansible inventory/topology. `mgmt_ip` is REQUIRED and, in `physical` mode, is the management IP of the real DUT (no containerlab node is created for it). |
+| `hostname`, `mgmt_ip`, `hwsku`, `iface_speed` | DUT identity, matched against the Ansible inventory/topology. `mgmt_ip` is REQUIRED. In `virtual` mode it is set statically on the DUT's containerlab node (not auto-assigned; must be inside `192.168.1.0/24`, default `192.168.1.3` is fine); in `physical` mode it is the management IP of the real DUT (no containerlab node is created for it). |
 | `total_ports` | Full front-panel port count of the platform (topology port range) — independent of how many ports are actually cabled. |
 | `image`, `image_archive` | Virtual mode only: the `sonic-vs` image tag, and optionally an explicit archive path (empty = auto-detect under `images.dir`). |
 | `build_sonic_vs` | (optional, default `true`) Virtual mode only. If `image` is not found in `docker images` and no archive is found/configured, and `image`'s repository is exactly `vrnetlab/sonic_sonic-vs`, automatically build it (guide §3.3: download `sonic-vs.img.gz` for `image`'s tag per `download_source` below and run vrnetlab's build). Always builds the tag `image` actually asks for (`master` or a release branch like `202511`) - never fabricates one tag's content from another's build. Fails with a clear error if the selected source(s) have no published `sonic-vs.img.gz` for that tag - set to `false` to always require a manually provided image/archive. **An image already present in `docker images` is always used as-is** - including a custom/manually-built tag with no corresponding SONiC branch name - so none of this (or `download_source` below) is ever consulted for it. |

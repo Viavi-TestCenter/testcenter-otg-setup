@@ -75,14 +75,17 @@ deployment:
                                   # auto-detection (hostname -I) picks the wrong interface.
     port: 50051
   stc_chassis:
-    ip: "192.168.1.2"             # testcenter.mode: virtual  -> STC chassis container mgmt IP (containerlab-assigned)
+    ip: "192.168.1.2"             # testcenter.mode: virtual  -> STC chassis container mgmt IP - set statically on the
+                                  #   containerlab node (not auto-assigned); must be inside 192.168.1.0/24, default is fine
                                   # testcenter.mode: physical -> REQUIRED. Management IP of the real STC chassis.
 
 dut:
   mode: virtual                   # virtual (sonic-vs deployed via containerlab) | physical (existing hardware).
                                   # MUST match testcenter.mode above - see the note there.
   hostname: "sonic-s6100-dut1"
-  mgmt_ip: "192.168.1.3"          # testcenter.mode/dut.mode: physical -> REQUIRED. Management IP of the real DUT.
+  mgmt_ip: "192.168.1.3"          # dut.mode: virtual  -> DUT container mgmt IP - set statically on the containerlab
+                                  #   node (not auto-assigned); must be inside 192.168.1.0/24, default is fine
+                                  # dut.mode: physical -> REQUIRED. Management IP of the real DUT.
   hwsku: "Force10-S6000"
   iface_speed: "40000"
   total_ports: 32                 # full front-panel port count of the platform (topology port range,
