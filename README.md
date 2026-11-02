@@ -2,6 +2,13 @@
 
 Quick start guide for deploying a Snappi test environment and running the pretest and Snappi smoke test against a SONiC DUT, using a VIAVI **TestCenter (STC)** chassis as the traffic generator, connected through the **OTG (Open Traffic Generator) API service**.
 
+> **ℹ️ Supported SONiC images: community SONiC only.** The automated script
+> (`container/run_snappi_test.sh`) and the sonic-mgmt baseline/patch it uses are
+> intended for a quick deploy and smoke test of a **1 TGen + 1 DUT** setup on
+> **community (upstream) SONiC**. They are **not validated for Enterprise SONiC
+> or other vendor SONiC forks**, whose DUT-side Python APIs and config CLI may
+> differ from community SONiC.
+
 ---
 
 ## 🚀 Recommended: Automated Setup (Start Here)
@@ -15,6 +22,14 @@ file:
 - Minigraph deployment
 - Pretest execution
 - Snappi smoke test execution
+
+> **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.**
+> With a physical DUT, `deploy-mg` replaces the switch's running configuration.
+> Use a dedicated lab DUT, back up its config first, and make sure
+> the platform/port settings in `config.yaml` match the hardware. Never run it
+> against a production or shared switch. `./run_snappi_test.sh --deploy-only`
+> does not touch the DUT's config. See
+> [`container/README.md` §7.8](container/README.md#78-deploy-mg-pretest-smoke-test-libruntestssh).
 
 To use it, fill in your environment details in `config.yaml` (VIAVI image paths,
 DUT info, license server, etc.) and run the script. This is the fastest way to
@@ -613,6 +628,8 @@ echo "abc" > password.txt
 
 ./testbed-cli.sh -t testbed.yaml deploy-mg vms-snappi-sonic snappi-sonic password.txt -vvvv
 ```
+
+> **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.** On a physical DUT this step **replaces the switch's running configuration** (it runs `load_minigraph`). Use only a dedicated lab DUT, back up its config (e.g. `config_db.json`) first, and make sure the topology/HwSKU/port speeds you generated from match the real platform. Never run it against a production or shared switch. This guide and its patch are validated on community SONiC only, not Enterprise/vendor SONiC forks.
 
 This generates a `minigraph.xml` from the testbed + topology files (§4) and pushes it to the DUT, bringing up the VLAN, IP addressing, and interface config the Snappi tests rely on. Re-run this step any time `testbed.yaml`, the topology file, or the device/link CSVs change.
 
