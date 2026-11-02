@@ -4,6 +4,14 @@
 # Paths are resolved relative to this file's own directory unless given as
 # absolute paths. Passwords below are lab defaults (admin/admin) matching the
 # containerlab SONiC default credentials - change them for a real DUT.
+#
+# WARNING - physical DUT configuration is overwritten: with dut.mode: physical,
+# the deploy-mg step (full run, --test-only, --deploy-mg, and automatically
+# --pretest/--smoke-test) pushes a generated minigraph and REPLACES the real
+# switch's running configuration. Use only a dedicated lab DUT, back up its
+# config first, and never run it against a production or shared switch.
+# --deploy-only does not touch the DUT's config.
+# This tool supports community SONiC only - not Enterprise/vendor SONiC forks.
 # =============================================================================
 
 images:
@@ -82,6 +90,11 @@ deployment:
 dut:
   mode: virtual                   # virtual (sonic-vs deployed via containerlab) | physical (existing hardware).
                                   # MUST match testcenter.mode above - see the note there.
+                                  # WARNING: physical => deploy-mg OVERWRITES the real DUT's running
+                                  #   config (generated minigraph, built from hwsku/iface_speed/
+                                  #   total_ports/links/topology below - set them for your hardware).
+                                  #   Dedicated lab DUT only, back up its config first, never a
+                                  #   production/shared switch. Community SONiC only.
   hostname: "sonic-s6100-dut1"
   mgmt_ip: "192.168.1.3"          # dut.mode: virtual  -> DUT container mgmt IP - set statically on the containerlab
                                   #   node (not auto-assigned); must be inside 192.168.1.0/24, default is fine
