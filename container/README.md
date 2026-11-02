@@ -9,6 +9,22 @@ Built on top of the workflow documented in the
 
 The solution supports deployment of sonic-mgmt, Labserver, the OTG API Service, the STC chassis, and an optional virtual SONiC DUT (`sonic-vs`).
 
+> **ℹ️ Supported SONiC images: community SONiC only.** This script (and the
+> bundled sonic-mgmt baseline commit + patch) is intended for a quick deploy and
+> smoke test of a **1 TGen + 1 DUT** setup running **community (upstream) SONiC**
+> — `sonic-vs` or community-image hardware. It is **not validated for Enterprise
+> SONiC or other vendor SONiC forks**, whose DUT-side Python APIs and config CLI
+> can differ from community SONiC and break stock sonic-mgmt modules. See the
+> `deploy-mg` warning in [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
+
+> **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.** With
+> `dut.mode: physical`, the `deploy-mg` step (run by the full run, `--test-only`,
+> `--deploy-mg`, and automatically by `--pretest`/`--smoke-test`) pushes a
+> generated minigraph and **replaces the real switch's running configuration**.
+> Use only a dedicated lab DUT, back up its config first, and never run it
+> against a production or shared switch. `--deploy-only` does not touch the
+> DUT's config.
+
 It is **idempotent and reuse-aware**: re-running it does not blindly tear
 down and rebuild everything. Already-healthy pieces (the sonic-mgmt
 container, the sonic-mgmt checkout, the Labserver, the OTG service) are
@@ -232,6 +248,16 @@ one you already use for other test work) to reuse as-is — see
 
 ## 3. Quick Start
 
+> **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.**
+> With `dut.mode: physical`, every mode except `--deploy-only` can run `deploy-mg`,
+> which pushes a generated minigraph and **replaces the real switch's running
+> configuration** — not safe on a production or shared DUT. Before hardware
+> testing: (1) use a dedicated lab DUT, (2) back up its config (e.g.
+> `config_db.json`) and know how to restore it, (3) make sure `dut.hwsku`,
+> `dut.iface_speed`, `dut.total_ports`, `dut.links[]` and `topology.*` match the
+> real platform, and (4) confirm the DUT runs community SONiC. Details:
+> [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
+
 ```bash
 cd container
 
@@ -324,6 +350,11 @@ leave that clone in place too.
 ```
 ./run_snappi_test.sh [-c config.yaml] [options]
 ```
+
+> **⚠️ Hardware warning:** with `dut.mode: physical`, every mode except `--deploy-only`,
+> `--gen-config`, `--destroy`, `--show-config` and `--list-versions` runs `deploy-mg`
+> (`--pretest`/`--smoke-test` only if it hasn't already run), which **overwrites the
+> real DUT's running configuration** (the default full run included). See [§7.8](#78-deploy-mg-pretest-smoke-test-libruntestssh).
 
 | Option | Effect |
 |---|---|
@@ -663,6 +694,24 @@ Runs, inside the sonic-mgmt container:
 3. `pytest snappi_tests/test_snappi.py` — the all-to-all bidirectional
    traffic smoke test (ARP resolution + Tx/Rx within tolerance on every
    flow).
+
+> **⚠️ Hardware warning — `deploy-mg` overwrites a physical DUT's configuration.**
+> `deploy-mg` generates a minigraph from the generic topology in `config.yaml`
+> (`topology.*`, `testbed.*`, `dut.hwsku`, `dut.iface_speed`, `dut.total_ports`)
+> and loads it onto the DUT, **replacing its running configuration**. With
+> `dut.mode: physical` this applies to the real switch:
+> - Use only a **dedicated or sacrificial DUT**, and back up its config first.
+>   Never run it against a shared switch.
+> - Which modes trigger it: `full` (no flag), `--test-only`, `--deploy-mg`, and
+>   automatically `--pretest`/`--smoke-test` if it hasn't run since the last
+>   deploy. `--deploy-only` never touches the DUT's config.
+> - The generated minigraph only matches the platform if you edit `dut.hwsku`,
+>   `dut.iface_speed`, `dut.total_ports`, `dut.links[]` and `topology.*` for your
+>   hardware; the tool does not auto-discover them.
+> - The tool is a quick 1 TGen + 1 DUT smoke test, validated on community SONiC
+>   only. Enterprise/vendor SONiC forks may lack APIs that stock sonic-mgmt
+>   modules (e.g. `sonic_basic_facts.py`) expect on the DUT, and are not
+>   validated.
 
 Each step's full output is captured under `$LOG_DIR`; a short summary line
 is extracted for the console report. Allure flags are added automatically
