@@ -100,7 +100,7 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
                 },
             }
 
-          def lossless_cfg_fn(queue, message_size_kb):
+          def lossless_cfg_fn(port_id, queue, message_size_kb):
             dscp = priority_to_dscp[queue]
             qp_cfg = {"message_size_unit": "kb", "message_size": message_size_kb, "dscp": dscp, "verb": "write"}
             if ecn_capable:
@@ -358,7 +358,7 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic_scale(
             },
         }
 
-    def lossless_cfg_fn(queue, message_size_kb):
+    def lossless_cfg_fn(port_id, queue, message_size_kb):
         dscp = priority_to_dscp[queue]
         return {
             "mtu": IB_MTU_BYTES,

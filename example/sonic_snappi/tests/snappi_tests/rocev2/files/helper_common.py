@@ -99,7 +99,7 @@ def run_rocev2_step_portable(api, base_config, port_config_list, topology, *,
     """
     pytest_assert(duthosts is not None, "run_rocev2_step_portable requires duthosts")
 
-    config = configure_rocev2_topology(copy.deepcopy(base_config), port_config_list, topology)
+    config, _ = configure_rocev2_topology(copy.deepcopy(base_config), port_config_list, topology)
     if post_configure_hook is not None:
         post_configure_hook(config)
     # The shared snappi fixtures force location_preemption=True (IxNetwork default).
