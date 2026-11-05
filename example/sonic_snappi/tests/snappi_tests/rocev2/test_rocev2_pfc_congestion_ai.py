@@ -91,19 +91,22 @@ def _add_return_flows(topology, rx, qp_num_base):
     """
     Make every sender <-> Rx pair bidirectional. For each sender port, the Rx port
     gets a peer back to it carrying one QP per sender QP, with the same dscp /
-    message size / ecn (so the same queue) and its own unique qp_num:
-    (rx_port_id+1)*100 + 10*(sender_port_id+1) + queue, where queue is recovered
-    from the sender's qp_num = qp_num_base(sender, queue). Mutates and returns
+    message size / ecn (so the same queue) and its own unique qp_num. The Rx QP
+    numbers are CONSECUTIVE: (rx_port_id+1)*100 + 13, +14, ... in sender/QP order
+    (e.g. Rx port 1 -> 213, 214, 215, 216). The STC/OTG backend builds the receive
+    side as one QpStart/QpCount range with step 1 per port, so non-consecutive Rx QPs
+    (the old 213/233/240/241) are never matched by the receiver. Mutates and returns
     topology; the Rx entry keeps its port-level settings (mtu, cnp, connection_type).
     """
     senders = [p for p in topology if p != rx]
     peer_qp_configs = {}
+    next_qp = (rx + 1) * 100 + 13
     for s in senders:
         rev = []
         for qp in topology[s]["qp_configs"]:
-            q = qp["qp_num"] - qp_num_base(s, 0)
             rev.append({**{k: v for k, v in qp.items() if k != "qp_num"},
-                        "qp_num": (rx + 1) * 100 + 10 * (s + 1) + q})
+                        "qp_num": next_qp})
+            next_qp += 1
         peer_qp_configs[s] = rev
     rx_entry = {k: v for k, v in topology[rx].items() if k != "qp_configs"}
     topology[rx] = {**rx_entry, "peers": senders, "peer_qp_configs": peer_qp_configs}
