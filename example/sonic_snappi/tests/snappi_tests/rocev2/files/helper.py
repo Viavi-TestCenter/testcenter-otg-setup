@@ -27,7 +27,6 @@ Layers in this file:
 """
 import random
 import logging
-import json
 import time
 import collections
 from dataclasses import dataclass
@@ -123,9 +122,13 @@ def snappi_dut_port_mapping(snappi_ports):
 def configure_rocev2_topology(config, port_config_list, topology):
     """
     Apply a RoCEv2 topology onto a snappi config. Each topology entry is keyed
-    by tx port id and may carry: peers (required), mtu, qp_configs, cnp,
+    by tx port id and may carry: peers (required), mtu, ib_mtu, qp_configs, cnp,
     connection_type, dcqcn_settings, rocev2_port_config. Missing keys fall back
-    to the defaults below.
+    to the defaults below. A port with more than one peer must also carry
+    peer_qp_configs ({peer_id: [qp_cfg, ...]}). ib_mtu defaults to mtu.
+
+    Returns (config, dscp_by_qp): dscp_by_qp maps each QP flow name (e.g. "QP0_0")
+    to its resolved DSCP, for any snappi backend.
     """
     default_qp_configs = [
         {"qp_num": 33, "dscp": 3, "ecn": "non_ect", "message_size_unit": "mb", "message_size": 1},
@@ -174,6 +177,17 @@ def configure_rocev2_topology(config, port_config_list, topology):
     }
 
     qps_objs = {}
+    dscp_by_qp = {}
+    rocev2_int_by_port = {}
+    qp_dest = {}  # qp_name -> (dest_port_id, index within that peer's QP list)
+    # Receive-only ports (peers == [], not rx_only) need a mirrored peer/QP per
+    # sender, else the backend rejects the config (limitation-rocev2flow.qp.dest_not_found).
+    # Applied in a second pass, only for destinations that do not peer back.
+    mirrors_needed = []  # (dest_port_id, src_port_id, src_ip, [(qp_num, dscp, ecn), ...])
+    # Running counter for QPs without an explicit "qp_num": starts at the first
+    # default qp_num and increments across the whole topology (not reset per
+    # port), so every port gets distinct source_qp_number values.
+    next_qp_num = default_qp_configs[0]["qp_num"]
     for tx_port_id, topo_entry in topology.items():
         pytest_assert(
             isinstance(topo_entry.get("peers"), list),
@@ -190,8 +204,9 @@ def configure_rocev2_topology(config, port_config_list, topology):
 
         rocev2 = getattr(tx_dev, "rocev2", None)
         rocev2_int = rocev2.ipv4_interfaces.add()
-        rocev2_int.ib_mtu = topology[tx_port_id].get("mtu", 4096)
+        rocev2_int.ib_mtu = topology[tx_port_id].get("ib_mtu", topology[tx_port_id].get("mtu", 4096))
         rocev2_int.ipv4_name = ipv4_stack.name
+        rocev2_int_by_port[tx_port_id] = rocev2_int
 
         peers_ids = topo_entry["peers"]
         if topo_entry.get("rx_only"):
@@ -281,7 +296,7 @@ def configure_rocev2_topology(config, port_config_list, topology):
                             qp_name = f"QP{tx_port_id}_rx_{tx_i}_{qp_j}"
                         stf_flow.tx_endpoint = qp_name
                         stf_flow.name = qp_name
-                        stf_flow.rocev2_verb.choice = topo_entry.get("verb", "send_with_immediate")
+                        stf_flow.rocev2_verb.choice = "write"
                         stf_flow.message_size_unit = "kb"
                         stf_flow.message_size = 4
             continue
@@ -290,15 +305,14 @@ def configure_rocev2_topology(config, port_config_list, topology):
             logger.info(f"RoCEv2 {tx_port_id}: rx-only port, skipping RoCEv2 interface/QP config")
             continue  # rx-only port: no rocev2_int, no peers, no QPs
 
-        # Fail fast on multi-peer tx ports: QPs are created once after the peer loop
-        # and would attach only to the last peer. Single peer (or none, for an rx-only
-        # node) is supported today. TODO: to support multi-peer, move QP creation inside
-        # the peer loop with per-peer-unique peer/QP names.
+        # Multi-peer tx ports must say which QPs go to which peer (peer_qp_configs),
+        # otherwise the QPs would attach only to the last peer. Single peer (or none,
+        # for an rx-only node) needs nothing extra.
+        peer_qp_cfgs = topo_entry.get("peer_qp_configs")
         pytest_assert(
-            len(peers_ids) <= 1,
-            f"configure_rocev2_topology: tx port {tx_port_id} has {len(peers_ids)} peers; "
-            f"multi-peer per tx port is not supported yet (QPs attach only to the last peer). "
-            f"Use one peer per tx port, or extend the helper to create QPs per peer."
+            len(peers_ids) <= 1 or (isinstance(peer_qp_cfgs, dict) and all(p in peer_qp_cfgs for p in peers_ids)),
+            f"configure_rocev2_topology: tx port {tx_port_id} has {len(peers_ids)} peers but no "
+            f"'peer_qp_configs' entry for each of them; give every peer its own QP list."
         )
         # Fail fast on unknown peers (no configured IP/device) so misconfig surfaces
         # here rather than as silently-dropped destinations downstream.
@@ -321,23 +335,47 @@ def configure_rocev2_topology(config, port_config_list, topology):
         dest_port_ips = [port_to_dev_ip[port_id]["ip"] for port_id in peers_ids if port_id in port_to_dev_ip]
         logger.info(f"RoCEv2 {tx_port_id}, Dest Ports: {peers_ids}, Dest IPs: {dest_port_ips}")
 
-        peer_ips = dest_port_ips or ["0.0.0.0"]
-        for dest_ip in peer_ips:
-            peer = rocev2_int.peers.add()
-            peer.name = f"RoCEv2 {tx_port_id}"
-            peer.destination_ip_address = dest_ip
-
         qps_objs[tx_port_id] = []
-        for indx, qp_cfg in enumerate(qp_cfgs):
-            qp = peer.qps.add()
-            qp.qp_name = f"QP{tx_port_id}_{indx}"
-            qps_objs[tx_port_id].append((f"QP{tx_port_id}_{indx}", qp_cfg))
-            qp.connection_type.choice = "reliable_connection"
-            rc = qp.connection_type.reliable_connection
-            rc.source_qp_number = qp_cfg.get("qp_num", _port_qp_base[tx_port_id] + indx)
-            _def = default_qp_configs[indx % len(default_qp_configs)]
-            rc.dscp = qp_cfg.get("dscp", _def["dscp"])
-            rc.ecn = qp_cfg.get("ecn", _def["ecn"])
+        # (dest port, peer name, QP list, QP-name template) per peer. Single-peer ports
+        # keep the historical names (peer "RoCEv2 <tx>", QP "QP<tx>_<i>"); multi-peer
+        # ports need per-peer-unique names ("QP<tx>_to<dest>_<i>").
+        if len(peers_ids) == 1 and peer_qp_cfgs is None:
+            peer_plan = [(peers_ids[0], f"RoCEv2 {tx_port_id}", qp_cfgs, "QP{tx}_{i}")]
+        else:
+            peer_plan = [(pid, f"RoCEv2 {tx_port_id} -> {pid}", peer_qp_cfgs[pid], "QP{tx}_to{dest}_{i}")
+                         for pid in peers_ids]
+
+        for dest_port_id, peer_name, peer_qps, qp_name_fmt in peer_plan:
+            peer = rocev2_int.peers.add()
+            peer.name = peer_name
+            peer.destination_ip_address = port_to_dev_ip[dest_port_id]["ip"]
+
+            qp_records = []
+            for indx, qp_cfg in enumerate(peer_qps):
+                qp_name = qp_name_fmt.format(tx=tx_port_id, dest=dest_port_id, i=indx)
+                qp = peer.qps.add()
+                qp.qp_name = qp_name
+                qps_objs[tx_port_id].append((qp_name, qp_cfg))
+                qp_dest[qp_name] = (dest_port_id, indx)
+                qp.connection_type.choice = "reliable_connection"
+                rc = qp.connection_type.reliable_connection
+                if "qp_num" in qp_cfg:
+                    rc.source_qp_number = qp_cfg["qp_num"]
+                else:
+                    rc.source_qp_number = next_qp_num
+                    next_qp_num += 1
+                _def = default_qp_configs[indx % len(default_qp_configs)]
+                rc.dscp = qp_cfg.get("dscp", _def["dscp"])
+                rc.ecn = qp_cfg.get("ecn", _def["ecn"])
+                dscp_by_qp[qp_name] = rc.dscp
+                qp_records.append((rc.source_qp_number, rc.dscp, rc.ecn))
+
+            # The destination only needs an auto-mirror when it is a plain receive-only
+            # node (not an explicit rx_only listener) that does not peer back.
+            dest_topo = topology.get(dest_port_id, {})
+            if not dest_topo.get("rx_only") and tx_port_id not in dest_topo.get("peers", []):
+                mirrors_needed.append(
+                    (dest_port_id, tx_port_id, port_to_dev_ip[tx_port_id]["ip"], qp_records))
 
         stf_peer = config.stateful_flows.rocev2.add()
         tx_port = stf_peer.tx_ports.add()
@@ -345,28 +383,26 @@ def configure_rocev2_topology(config, port_config_list, topology):
         tx_port.transmit_type.target_line_rate.value = port_cfg.get("target_line_rate", 100)
         tx_port.transmit_type.choice = port_cfg.get("transmit_type", "target_line_rate")
 
-        # Determine rx_endpoint binding when the peer is an rx_only port.
-        # Without rx_endpoint, STC cannot bind the initiator QP to the correct
-        # server QP and may send CM CONNECT to the wrong tester port.
-        peer_topo = topology.get(peers_ids[0], {}) if peers_ids else {}
-        peer_is_rx_only = peer_topo.get("rx_only", False)
-        peer_num_server_qps = peer_topo.get("num_server_qps", 1)
-        tx_peer_index = next(
-            (i for i, pid in enumerate(peer_topo.get("peers", [])) if pid == tx_port_id), 0)
-
-        for flow_indx, (qps_name, qp_cfg) in enumerate(qps_objs[tx_port_id]):
+        for qps_name, qp_cfg in qps_objs[tx_port_id]:
             logger.info(f"Configured QPs: {qps_name}")
             stf_peer_flow = tx_port.transmit_type.target_line_rate.flows.add()
             stf_peer_flow.tx_endpoint = qps_name
             stf_peer_flow.name = qps_name
-            verb = qp_cfg.get("verb", "send_with_immediate")
-            stf_peer_flow.rocev2_verb.choice = verb
-            if verb in ("send_with_immediate", "write_with_immediate"):
-                stf_peer_flow.rocev2_verb.send_with_immediate.immediate_data = "bb"
+            # STC only implements opcode=10 (RDMA Write) for RC connections; all QPs
+            # here use reliable_connection, so "write" is the only verb this backend
+            # accepts (no immediate_data).
+            stf_peer_flow.rocev2_verb.choice = "write"
             stf_peer_flow.message_size_unit = qp_cfg.get("message_size_unit", "kb")
             stf_peer_flow.message_size = qp_cfg.get("message_size", 128)
-            if peer_is_rx_only:
-                rx_peer_id = peers_ids[0]
+            # Bind to the server QP when the destination is an rx_only port.
+            # Without rx_endpoint, STC cannot bind the initiator QP to the correct
+            # server QP and may send CM CONNECT to the wrong tester port.
+            rx_peer_id, flow_indx = qp_dest[qps_name]
+            peer_topo = topology.get(rx_peer_id, {})
+            if peer_topo.get("rx_only"):
+                peer_num_server_qps = peer_topo.get("num_server_qps", 1)
+                tx_peer_index = next(
+                    (i for i, pid in enumerate(peer_topo.get("peers", [])) if pid == tx_port_id), 0)
                 if peer_num_server_qps > 1:
                     stf_peer_flow.rx_endpoint = f"QP{rx_peer_id}_rx_{tx_peer_index}_{flow_indx}"
                 else:
@@ -412,7 +448,28 @@ def configure_rocev2_topology(config, port_config_list, topology):
         dcqcn.initial_alpha = dcqcn_settings_cfg.get("initial_alpha", 1000)
         dcqcn.maximum_rate_decrement_at_time = dcqcn_settings_cfg.get("maximum_rate_decrement_at_time", 12)
 
-    return config
+    # Second pass: mirror each sender's QPs onto its receive-only destination
+    # (same dscp/ecn). One peer per SENDER, not per QP: a peer's
+    # destination_ip_address must be unique per interface or SetConfig rejects it.
+    # The mirror's source_qp_number is unique per Rx port ((dest_port_id+1)*100 +
+    # offset); a repeated QP number across ports keeps the STC CM backend from
+    # ever reaching "established".
+    mirror_qp_offset = collections.defaultdict(int)
+    for dest_port_id, src_port_id, src_ip, qp_records in mirrors_needed:
+        mirror_peer = rocev2_int_by_port[dest_port_id].peers.add()
+        mirror_peer.name = f"RoCEv2 {dest_port_id} <- {src_port_id}"
+        mirror_peer.destination_ip_address = src_ip
+        for indx, (qp_num, dscp, ecn) in enumerate(qp_records):
+            qp = mirror_peer.qps.add()
+            qp.qp_name = f"QP{dest_port_id}_{src_port_id}_{indx}"
+            qp.connection_type.choice = "reliable_connection"
+            rc = qp.connection_type.reliable_connection
+            rc.source_qp_number = (dest_port_id + 1) * 100 + mirror_qp_offset[dest_port_id]
+            mirror_qp_offset[dest_port_id] += 1
+            rc.dscp = dscp
+            rc.ecn = ecn
+
+    return config, dscp_by_qp
 
 
 # ===========================================================================
@@ -439,7 +496,8 @@ def is_traffic_stopped(api, flow_names=None):
     request.rocev2_flow.choice = "per_qp"
     request.rocev2_flow.per_qp.column_names = flow_names if flow_names else []
     stats = api.get_metrics(request).rocev2_flow_per_qp_metrics
-    return all(float(fs.data_tx_rate) == 0 for fs in stats)
+    # all() on an empty list is True; require at least one row before trusting it.
+    return bool(stats) and all(float(fs.data_tx_rate) == 0 for fs in stats)
 
 
 def start_stop(api, operation="start", op_type="protocols", waittime=10):
@@ -506,10 +564,15 @@ def get_stats(api, stat_name, columns=None, return_type='stat_obj'):
         stat_obj = api.get_metrics(req).rocev2_ipv4_per_peer_metrics
         column_headers = per_peer_columns
     elif stat_name == "Port Statistics":
-        ixnet = api._ixnetwork
-        dp_metrics = StatViewAssistant(ixnet, stat_name)
-        df = pd.DataFrame(dp_metrics.Rows.RawData, columns=dp_metrics.ColumnHeaders)
-        df = df[columns] if columns else df
+        if not hasattr(api, "_ixnetwork"):
+            # IxNetwork-only stats view (PFC/pause counters); other backends (e.g. STC)
+            # don't expose it, so return empty rather than crash.
+            df = pd.DataFrame(columns=columns) if columns else pd.DataFrame()
+        else:
+            ixnet = api._ixnetwork
+            dp_metrics = StatViewAssistant(ixnet, stat_name)
+            df = pd.DataFrame(dp_metrics.Rows.RawData, columns=dp_metrics.ColumnHeaders)
+            df = df[columns] if columns else df
         if return_type == 'print':
             logger.info("\n%s" % tabulate(df, headers="keys", tablefmt="psql"))
             return
@@ -556,11 +619,12 @@ def sample_flow_rates(api, n=3, gap=2):
 def run_rocev2_step(api, base_config, port_config_list, topology, *, traffic_duration,
                     duthosts=None, sample_rates=False, sample_start=3, sample_count=3, sample_gap=2,
                     config_name=None):
-    config = configure_rocev2_topology(base_config, port_config_list, topology)
+    config, dscp_by_qp = configure_rocev2_topology(base_config, port_config_list, topology)
     api.set_config(config)
-    if config_name:
+    if config_name and hasattr(api, "_ixnetwork"):
         # Save the IxNetwork config under the (sanitized) test name + parameters
         # for later replay/debug, e.g. test_rocev2_pfc_congestion_ai[q3_single].ixncfg
+        # Only available on the IxNetwork snappi backend; other backends (e.g. STC) lack this attribute.
         safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in config_name)
         api._ixnetwork.SaveConfig(Arg1=f"{safe}.ixncfg")
         logger.info(f"Saved IxNetwork config: {safe}.ixncfg")
@@ -581,9 +645,6 @@ def run_rocev2_step(api, base_config, port_config_list, topology, *, traffic_dur
         wait_with_message("Waiting for traffic completion...", traffic_duration)
 
     start_stop(api, operation="stop", op_type="traffic")
-
-    streams = api._ixnetwork.Traffic.find().RoceV2Traffic.find().RoceV2Stream.find()
-    dscp_by_qp = {s.Name: int(s.IpDscp) for s in streams}
 
     df = get_stats(api, stat_name="per_qp", return_type='df')
     df.insert(df.columns.get_loc('port_rx') + 1, 'ip_dscp', df['flow_name'].map(dscp_by_qp))
@@ -637,6 +698,9 @@ def scheduler_weights(snappi_dut_port_map, queue_ids=None, asic_index=0):
                 if want_specific and q not in queue_ids:
                     continue
                 sched_name = q_val.get("scheduler")
+                # Some configs store the reference as "[SCHEDULER|NAME]" instead of "NAME".
+                if sched_name and sched_name.startswith("[") and sched_name.endswith("]"):
+                    sched_name = sched_name[1:-1].split("|", 1)[-1]
                 sched = sched_cfg.get(sched_name, {}) if sched_name else {}
                 weight = sched.get("weight")
                 row[f"UC{q} scheduler"] = sched_name
@@ -753,9 +817,8 @@ _QUEUE_COUNTER_TABLE_COLS = ["totalpacket", "totalbytes", "droppacket", "dropbyt
 def _parse_queue_counters_table(raw_output):
     """
     Parse the plain-text table from `show queue counters` into the same
-    {port: {queue_id: {col: val}}} shape as the (not universally supported)
-    `--json` output. Needed because some SONiC distros (e.g. Broadcom
-    Enterprise SONiC) don't implement --json for this command at all:
+    {port: {queue_id: {col: val}}} dict. Used instead of `--json`, which some
+    SONiC distros (e.g. Broadcom Enterprise SONiC) don't implement:
 
         Port    TxQ    Counter/pkts    Counter/bytes    Drop/pkts    Drop/bytes ...
         ---------  -----  --------------  --------------- ...
@@ -772,22 +835,11 @@ def _parse_queue_counters_table(raw_output):
     return queuecounters
 
 
-def _get_queue_counters(duthost):
-    """Try `show queue counters --json`; fall back to plain-text on devices that don't support it."""
-    result = duthost.shell("show queue counters --json", module_ignore_errors=True)
-    if result["rc"] == 0:
-        queuecounters = json.loads(result["stdout"])
-        return {port: {q: v for q, v in counters.items() if q != "time"}
-                for port, counters in queuecounters.items()}
-    raw_output = duthost.shell("show queue counters")["stdout"]
-    return _parse_queue_counters_table(raw_output)
-
-
 def queue_counters(snappi_dut_port_map, queue_ids=None, queue_cols=None):
     """
-    Per (dut, interface, snappi_port) live queue counters. Tries
-    `show queue counters --json` first; falls back to plain-text parsing for
-    devices that don't support --json (e.g. Broadcom Enterprise SONiC).
+    Per (dut, interface, snappi_port) live queue counters, parsed from the
+    plain-text `show queue counters` output (some SONiC images have no --json
+    option for this command).
     queue_ids like ["UC3","UC5"]; queue_cols like ["totalpacket"].
     Columns: "UC<q> <col>".
     """
@@ -797,10 +849,10 @@ def queue_counters(snappi_dut_port_map, queue_ids=None, queue_cols=None):
     all_rows = []
     for duthost, dut_snappi_ports_map in snappi_dut_port_map.items():
         dut_name = getattr(duthost, "hostname", str(duthost))
-        queuecounters = _get_queue_counters(duthost)
+        queuecounters = _parse_queue_counters_table(duthost.shell("show queue counters")["stdout"])
         for dut_interface, snappi_port in dut_snappi_ports_map.items():
             row = {"dut": dut_name, "dut_interface": dut_interface, "snappi_port": snappi_port}
-            int_queue_counters = queuecounters[dut_interface]
+            int_queue_counters = queuecounters.get(dut_interface, {})
             for queue_id, queue_vals in int_queue_counters.items():
                 if want_specific_queues and queue_id not in queue_ids:
                     continue
@@ -995,10 +1047,13 @@ def build_incast_topology(port_ids, lossless_cfg_fn, lossless_spec, lossy_cfg=No
 
     Args:
         port_ids (list): all snappi port ids.
-        lossless_cfg_fn (callable): entry -> per-Tx cfg dict, called as
-            lossless_cfg_fn(*entry) (e.g. entry=(queue, size_kb)).
+        lossless_cfg_fn (callable): (port_id, *entry) -> per-Tx cfg dict, called
+            as lossless_cfg_fn(port_id, *entry) (e.g. entry=(queue, size_kb)).
+            Takes the port id so QP numbers can be keyed per port when several
+            Tx share an entry.
         lossless_spec (list): entries cycled across the lossless Tx ports.
-        lossy_cfg (dict, optional): per-Tx cfg for the last (lossy) Tx port;
+        lossy_cfg (dict or callable(port_id) -> dict, optional): per-Tx cfg for the
+            last (lossy) Tx port; a callable can key QP numbers off the port.
             None => no lossy sender, every Tx is lossless.
         rx (optional): receiver port id; default random.choice(port_ids).
         last_tx (optional): the lossy Tx port id; default the last Tx port.
@@ -1018,7 +1073,7 @@ def build_incast_topology(port_ids, lossless_cfg_fn, lossless_spec, lossy_cfg=No
     else:
         last_tx = None
 
-    rx_base = lossless_cfg_fn(*lossless_spec[0])
+    rx_base = lossless_cfg_fn(rx, *lossless_spec[0])
     rx_entry = {**rx_base, "peers": tx_ports if configure_rx_peers else []}
     if configure_rx_peers:
         rx_entry["rx_only"] = True
@@ -1029,7 +1084,7 @@ def build_incast_topology(port_ids, lossless_cfg_fn, lossless_spec, lossy_cfg=No
             unique_specs = list(dict.fromkeys(lossless_spec))
             all_qpcs = []
             for spec in unique_specs:
-                all_qpcs.extend(lossless_cfg_fn(*spec).get("qp_configs", []))
+                all_qpcs.extend(lossless_cfg_fn(rx, *spec).get("qp_configs", []))
             _n_qp = len(all_qpcs)
             _base = rx_base["qp_configs"][0].get("qp_num", 33)
             rx_entry = {**rx_entry, "qp_configs": [
@@ -1044,11 +1099,12 @@ def build_incast_topology(port_ids, lossless_cfg_fn, lossless_spec, lossy_cfg=No
     li = 0
     for tx_idx, tx in enumerate(tx_ports):
         if lossy_cfg is not None and tx == last_tx:
-            topology[tx] = {"peers": [rx], **lossy_cfg}
+            lcfg = lossy_cfg(tx) if callable(lossy_cfg) else lossy_cfg
+            topology[tx] = {"peers": [rx], **lcfg}
         else:
             entry = lossless_spec[li % len(lossless_spec)]
             used.append(entry)
-            cfg = lossless_cfg_fn(*entry)
+            cfg = lossless_cfg_fn(tx, *entry)
             if configure_rx_peers and "qp_configs" in cfg:
                 n_qp = len(cfg["qp_configs"])
                 base = cfg["qp_configs"][0].get("qp_num", 33)
@@ -1111,7 +1167,8 @@ def build_rate_fairness(merged_df, rate_col="data_rx_rate_live", egress_port_col
                 "expected_rate": round(exp, 3),
                 "pct_err": round(abs(r["rx_rate"] - exp) / exp * 100, 2) if exp else float("nan"),
             })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["flow_name", "port_rx", "ip_dscp", "weight", "rx_rate",
+                                       "expected_rate", "pct_err"])
 
 
 def build_rate_fairness_by_queue(merged_df, rate_col="data_rx_rate_live",
@@ -1162,7 +1219,8 @@ def build_rate_fairness_by_queue(merged_df, rate_col="data_rx_rate_live",
                 "rx_rate": round(r["rx_rate"], 3), "expected_rate": round(exp, 3),
                 "pct_err": round(abs(r["rx_rate"] - exp) / exp * 100, 2) if exp else float("nan"),
             })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["port_rx", "tc", "weight", "n_flows", "flows", "offered",
+                                       "rx_rate", "expected_rate", "pct_err"])
 
 
 def build_rank_fairness(merged_df, dsps=None, by="port_tx", rate_col="data_rx_rate_live"):
