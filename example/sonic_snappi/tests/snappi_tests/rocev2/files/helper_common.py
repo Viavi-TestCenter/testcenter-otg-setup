@@ -43,6 +43,9 @@ __all__ = [
     "collect_flow_queue_stats_portable",
     "override_rocev2_qp_verb",
     "make_scale_qp_configs",
+    "STC_DSCP_REMAP",
+    "stc_safe_prio_dscp_map",
+    "enable_pfc_flow_control",
 ]
 
 
@@ -189,10 +192,11 @@ def override_rocev2_qp_verb(config, tx_port_id, qp_index, verb_choice, **verb_kw
     Post-process a config already built by configure_rocev2_topology() to
     override one QP's rocev2_verb after the config has already been built.
 
-    configure_rocev2_topology() reads the verb from each qp_cfg entry
-    (defaulting to "send_with_immediate"), so you can also set the verb
-    upfront via qp_cfg["verb"]. Use this function when you need to change
-    the verb on a specific QP after the topology is already constructed.
+    configure_rocev2_topology() currently hardcodes rocev2_verb = "write"
+    (the only verb STC RC connections support) and does NOT read a verb from
+    qp_cfg, so this function is the only way to give a QP a different verb.
+    Use it when you need to change the verb on a specific QP after the
+    topology is already constructed.
 
     Needed for test plan steps 7-8 (TC2 mixed message size): rank1's QP is
     specified as "4KB message size (WRITE only message)", i.e. an RDMA WRITE
@@ -262,3 +266,40 @@ def make_scale_qp_configs(num_endpoints, dscp, message_size_kb, qp_num_base=100,
     if extra_qp_fields:
         base.update(extra_qp_fields)
     return [{**base, "qp_num": qp_num_base + i} for i in range(num_endpoints)]
+
+
+# ---------------------------------------------------------------------------
+# STC adaptations shared by the PFC-based tests (TC4, TC5)
+# ---------------------------------------------------------------------------
+
+# DSCP picked from the DUT's DSCP_TO_TC_MAP -> DSCP actually used by the test.
+# STC derives a stream's PFC priority from its DSCP (default dscp>>3), so DSCP 4 lands on
+# PFC priority 0 and ignores the DUT's priority-4 pause (queue-4 flow never paused ->
+# massive drops). DSCP 32 (>>3 == 4) is also mapped to TC4 on the DUT and is paused
+# correctly. The remap is only applied when the DUT maps the new DSCP to the same TC.
+STC_DSCP_REMAP = {4: 34}
+
+
+def stc_safe_prio_dscp_map(prio_dscp_map):
+    """Return a prio_dscp_map where DSCPs STC cannot pause correctly are replaced (see STC_DSCP_REMAP)."""
+    safe = {}
+    for tc, dscps in prio_dscp_map.items():
+        new = []
+        for d in dscps:
+            nd = STC_DSCP_REMAP.get(d, d)
+            pytest_assert(nd == d or nd in dscps,
+                          f"DSCP {d} (TC{tc}) must be replaced by {nd} for STC, but the DUT "
+                          f"DSCP_TO_TC_MAP does not map DSCP {nd} to TC{tc} (has {sorted(dscps)})")
+            if nd not in new:
+                new.append(nd)
+        safe[tc] = new
+    logger.info(f"STC-safe prio_dscp_map: {safe} (from {prio_dscp_map})")
+    return safe
+
+
+def enable_pfc_flow_control(config):
+    """Set flow_control choice to ieee_802_1qbb so STC maps port-level PFC down to the
+    streamblock level. Without it snappi_dut_base_config sets the 802.1Qbb attributes
+    but STC never sees the choice and ignores PFC. Use as a post_configure_hook."""
+    for l1 in config.layer1:
+        l1.flow_control.choice = l1.flow_control.IEEE_802_1QBB

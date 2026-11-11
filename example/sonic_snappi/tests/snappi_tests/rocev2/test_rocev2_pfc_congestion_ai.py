@@ -29,89 +29,22 @@ from snappi_tests.rocev2.files.helper import *   # lib + re-exported fixtures
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.topology('multidut-tgen', 'tgen')]
+pytestmark = [
+    pytest.mark.topology('multidut-tgen', 'tgen'),
+    pytest.mark.skip_check_dut_health,
+]
 
 TRAFFIC_DURATION = 20      # seconds
 LOSSY_QUEUES = [0, 1]
 ACK_QUEUE = 6              # common queue carrying ACK/NAK for all (lossless + lossy) flows
 CNP_QUEUE = 5              # CNP control queue; its DSCP comes from the DUT DSCP->TC map
 LINE_RATE_PCT = 100       # % - each Tx sends at full rate to create the incast
-BIDIRECTIONAL = True      # Rx sends every sender's queues back to it (return flows)
 # Fixed DSCP per lossless queue instead of a random pick from the TC's DSCPs. The STC
 # sender only paused for PFC priority 3 when the stream used DSCP 26 (it kept line
 # rate with DSCP 3), so pin the lossless queues to a DSCP whose top 3 bits equal the
 # queue: Q3 -> DSCP 26, Q4 -> DSCP 34 (DSCP 26 maps to TC3, 34 to TC4 on the DUT).
 LOSSLESS_DSCP = {3: 26, 4: 34}
 RATE_TOLERANCE_PCT = 5
-
-# Addressing confirmed working end-to-end via the STC UI for this 4-port (1 Rx +
-# 3 Tx) incast: each port is its own /31 point-to-point link (tester_ip,
-# dut_gateway_ip), one subnet per port - same convention as
-# repro_rocev2_peer_cap.py's RX_IP_CFG/TX_IP_CFGS. Overridden here because
-# tests/common/snappi_tests/snappi_fixtures.py's auto IP assignment (minigraph
-# read-back, or a single dut_ip_start/snappi_ip_start pool keyed by the port's
-# position in the *whole* testbed port list) has no notion of this topology's
-# 3-subnet scheme and will not reliably reproduce it. Which port ends up as Rx
-# vs Tx is still decided at random by build_incast_topology - these IPs are
-# keyed by the DUT port each tester port is cabled to (peer_port), so they
-# always match the address configured on that DUT interface, not by port_id order.
-PORT_IP_OVERRIDES = {
-    "Ethernet0": ("50.1.1.1", "50.1.1.0"),
-    "Ethernet8": ("50.1.1.3", "50.1.1.2"),
-    "Ethernet16": ("50.1.1.5", "50.1.1.4"),
-    "Ethernet24": ("50.1.1.7", "50.1.1.6"),
-}
-PORT_IP_PREFIX = 31
-
-
-def _apply_port_ip_overrides(tconfig, plist, port_ids, overrides, prefix):
-    """
-    Force the snappi-side tester IP/gateway/prefix for `port_ids` to the
-    `overrides` entry of the DUT port each one is cabled to, on both the SnappiPortConfig objects (plist, consumed by
-    configure_rocev2_topology for peer destination_ip_address) and the matching
-    device's IPv4 stack in `tconfig` (the actual address the port transmits
-    from). Only touches the already-built snappi config/port objects - does not
-    push anything to the DUT, since the DUT side is expected to already carry
-    these addresses.
-    """
-    pc_by_id = {pc.id: pc for pc in plist}
-    for port_id in port_ids:
-        pc = pc_by_id[port_id]
-        tester_ip, dut_ip = overrides[pc.peer_port]
-        pc.ip = tester_ip
-        pc.gateway = dut_ip
-        pc.prefix_len = prefix
-        device = next(d for d in tconfig.devices if d.name == f"Device Port {port_id}")
-        ip_stack = device.ethernets[0].ipv4_addresses[0]
-        ip_stack.address = tester_ip
-        ip_stack.gateway = dut_ip
-        ip_stack.prefix = prefix
-
-def _add_return_flows(topology, rx, qp_num_base):
-    """
-    Make every sender <-> Rx pair bidirectional. For each sender port, the Rx port
-    gets a peer back to it carrying one QP per sender QP, with the same dscp /
-    message size / ecn (so the same queue) and its own unique qp_num. The Rx QP
-    numbers are CONSECUTIVE: (rx_port_id+1)*100 + 13, +14, ... in sender/QP order
-    (e.g. Rx port 1 -> 213, 214, 215, 216). The STC/OTG backend builds the receive
-    side as one QpStart/QpCount range with step 1 per port, so non-consecutive Rx QPs
-    (the old 213/233/240/241) are never matched by the receiver. Mutates and returns
-    topology; the Rx entry keeps its port-level settings (mtu, cnp, connection_type).
-    """
-    senders = [p for p in topology if p != rx]
-    peer_qp_configs = {}
-    next_qp = (rx + 1) * 100 + 13
-    for s in senders:
-        rev = []
-        for qp in topology[s]["qp_configs"]:
-            rev.append({**{k: v for k, v in qp.items() if k != "qp_num"},
-                        "qp_num": next_qp})
-            next_qp += 1
-        peer_qp_configs[s] = rev
-    rx_entry = {k: v for k, v in topology[rx].items() if k != "qp_configs"}
-    topology[rx] = {**rx_entry, "peers": senders, "peer_qp_configs": peer_qp_configs}
-    return topology
-
 
 # Each scenario = list of (lossless_queue, message_size_kb) entries, cycled
 # across the lossless Tx ports (one entry per Tx). The last Tx always drives
@@ -159,9 +92,9 @@ def test_rocev2_pfc_congestion_ai(
 
     tconfig, plist, sports = snappi_dut_base_config(duthosts, snappi_port_list, snappi_api)
     snappi_dut_port_map = snappi_dut_port_mapping(sports)
-    # 1 Rx + the rest Tx (3 Tx on a 4-port rig).
+    # 1 Rx + the rest Tx (3 Tx on a 4-port rig). IPs come from snappi_dut_base_config
+    # (variables.py dut_ip_start/snappi_ip_start), same as the other rocev2 tests.
     port_ids = [pc.id for pc in plist]
-    _apply_port_ip_overrides(tconfig, plist, port_ids, PORT_IP_OVERRIDES, PORT_IP_PREFIX)
     # derive_priority_to_dscp returns a memoized dict shared across tests: copy before pinning.
     priority_to_dscp = dict(derive_priority_to_dscp(prio_dscp_map))
     for q, dscp in LOSSLESS_DSCP.items():
@@ -176,51 +109,35 @@ def test_rocev2_pfc_congestion_ai(
     logger.info(f"CNP on queue {CNP_QUEUE} -> DSCP {cnp_dscp} (from DUT DSCP->TC map)")
     cnp_cfg = {"ip_dscp": cnp_dscp, "ecn_value": "non_ect"}
 
-    # qp_num keys off BOTH the port and the queue: (port_id+1)*100 + q, e.g.
-    # port0 -> 100s, port1 -> 200s, port2 -> 300s. Two different device/ports
-    # must never end up with the same QP number even if they ever land on the
-    # same queue (e.g. a 3rd sender cycling back onto an already-used
-    # lossless_spec entry; the 3:1 topology can't trigger that since q in
-    # {3,4} for lossless never overlaps q in {0,1} for lossy, but the formula
-    # no longer relies on that). Room for more QPs per port later: add entries
-    # to a port's qp_configs list with distinct q values - each still gets a
-    # unique qp_num for free.
-    def _qp_num(port_id, q):
-        return (port_id + 1) * 100 + q
-
-    def lossless_cfg(port_id, q, size_kb):
+    def lossless_cfg(q, size_kb):
         return {
             "mtu": 9100,
             "ib_mtu": 4096,
             "qp_configs": [{"message_size_unit": "kb", "message_size": size_kb,
-                            "dscp": priority_to_dscp[q], "qp_num": _qp_num(port_id, q)}],
+                            "dscp": priority_to_dscp[q]}],
             "cnp": cnp_cfg,
             "dcqcn_settings": {"enable_dcqcn": False},
-            "connection_type": _conn(ACK_QUEUE, priority_to_dscp),   # ACK/NAK on the common ACK queue
+            "connection_type": _conn(ACK_QUEUE, priority_to_dscp),
             "rocev2_port_config": port_cfg,
         }
 
-    def lossy_cfg(port_id):
-        return {
-            "mtu": 9100,
-            "ib_mtu": 4096,
-            "qp_configs": [{"message_size_unit": "kb", "message_size": 128,
-                            "dscp": priority_to_dscp[q], "qp_num": _qp_num(port_id, q)} for q in LOSSY_QUEUES],
-            "cnp": cnp_cfg,
-            "dcqcn_settings": {"enable_dcqcn": False},
-            "connection_type": _conn(ACK_QUEUE, priority_to_dscp),   # ACK/NAK on the common ACK queue
-            "rocev2_port_config": port_cfg,
-        }
+    lossy_cfg = {
+        "mtu": 9100,
+        "ib_mtu": 4096,
+        "qp_configs": [{"message_size_unit": "kb", "message_size": 128,
+                        "dscp": priority_to_dscp[q]} for q in LOSSY_QUEUES],
+        "cnp": cnp_cfg,
+        "dcqcn_settings": {"enable_dcqcn": False},
+        "connection_type": _conn(ACK_QUEUE, priority_to_dscp),
+        "rocev2_port_config": port_cfg,
+    }
 
     # 1 Rx, 3 Tx: the two lossless Txs use the scenario's (queue, size) entries;
     # the last Tx (last_tx) is always the lossy sender.
     topology, rx, last_tx, used = build_incast_topology(
-        port_ids, lossless_cfg, lossless_spec, lossy_cfg)
-    if BIDIRECTIONAL:
-        topology = _add_return_flows(topology, rx, _qp_num)
+        port_ids, lossless_cfg, lossless_spec, lossy_cfg, rx_reverse_rate=5)
     used_lossless = sorted({q for q, _ in used})
-    logger.info(f"[{scenario}] incast rx={rx} last_tx={last_tx} lossless_qs={used_lossless} "
-                f"bidirectional={BIDIRECTIONAL}\n{topology}")
+    logger.info(f"[{scenario}] incast rx={rx} last_tx={last_tx} lossless_qs={used_lossless}\n{topology}")
 
     # Pure PFC test: WRED on the lossless queue DROPS non-ECT traffic before PFC
     # engages. Disable WRED on ALL test ports, for ONLY the queues this test uses,

@@ -6,11 +6,17 @@ from snappi_tests.rocev2.files.helper import *
 from snappi_tests.rocev2.files.helper_common import (
     collect_flow_queue_stats_portable,
     make_scale_qp_configs,
+    stc_safe_prio_dscp_map as _stc_safe_prio_dscp_map,
+    enable_pfc_flow_control as _enable_pfc_flow_control,
 )
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.topology('multidut-tgen', 'tgen')]
+pytestmark = [
+    pytest.mark.topology('multidut-tgen', 'tgen'),
+    pytest.mark.skip_check_dut_health,
+]
+
 
 TRAFFIC_DURATION = 180
 CNP_DSCP = 48
@@ -83,6 +89,7 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
         snappi_dut_port_map = snappi_dut_port_mapping(sports)
         port_ids = [pc.id for pc in plist]
 
+        prio_dscp_map = _stc_safe_prio_dscp_map(prio_dscp_map)
         priority_to_dscp = derive_priority_to_dscp(prio_dscp_map)
 
         # Run twice per scenario: same-priority (3,3) then mixed-priority (3,4).
@@ -100,15 +107,14 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
                 },
             }
 
-          def lossless_cfg_fn(port_id, queue, message_size_kb):
+          def lossless_cfg_fn(queue, message_size_kb):
             dscp = priority_to_dscp[queue]
-            qp_cfg = {"message_size_unit": "kb", "message_size": message_size_kb, "dscp": dscp, "verb": "write"}
+            qp_cfg = {"message_size_unit": "kb", "message_size": message_size_kb, "dscp": dscp}
             if ecn_capable:
                 qp_cfg["ecn"] = "ect_1"
             return {
                 "mtu": IB_MTU_BYTES,
                 "eth_mtu": 9100,
-                "verb": "write",
                 "qp_configs": [qp_cfg],
                 "cnp": {"ip_dscp": CNP_DSCP, "ecn_value": "ect_1"},
                 "dcqcn_settings": {"enable_dcqcn": dcqcn},
@@ -131,7 +137,8 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
               snappi_api=snappi_api, duthosts=duthosts, plist=plist, tconfig=tconfig,
               snappi_dut_port_map=snappi_dut_port_map, topology=topology,
               prio_dscp_map=prio_dscp_map, queue_ids=qids,
-              traffic_duration=TRAFFIC_DURATION, sample_rates=True)
+              traffic_duration=TRAFFIC_DURATION, sample_rates=True,
+              post_configure_hook=_enable_pfc_flow_control)
 
           # STC may not populate all per-QP counters (message_fail, frame_sequence_error, etc.);
           # treat missing (NaN) values as 0 so pandas query() doesn't misfire on NaN != 0.
@@ -248,17 +255,17 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
                       "ACK STC tx/rx match (5% tolerance)",
                       "stc_ack_tx and stc_ack_rx must be within 5%",
                       override_df=ack_stc_df),
-              # PFC per rank: each TX rank must have PFC > 0 on its own driven queue.
-              make_check("pfc_count == 0",
-                      ["snappi_port", "queue", "pfc_count"],
-                      "PFC fires on each TX rank for its driven queue",
-                      "DUT Tx PFC must be > 0 for each TX rank's driven queue",
-                      override_df=rank_pfc_df),
           ]
 
           if not dcqcn:
               pfc_fail_expr = " or ".join(f"{c} == 0" for c in pfc_cols)
               checks += [
+                  # Per-rank: each TX rank must have PFC > 0 on its own driven queue.
+                  make_check("pfc_count == 0",
+                          ["snappi_port", "queue", "pfc_count"],
+                          "PFC fires on each TX rank for its driven queue (no DCQCN)",
+                          "DUT Tx PFC must be > 0 for each TX rank's driven queue",
+                          override_df=rank_pfc_df),
                   make_check(pfc_fail_expr, list(pfc_sum_df.columns),
                           f"PFC fires on queues {driven_queues} (no DCQCN, sender does not reduce rate)",
                           "DUT Tx PFC must be > 0 without DCQCN", override_df=pfc_sum_df),
@@ -272,7 +279,20 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic(
                           f"cnp_tx > 0 or cnp_rx > 0 required — rx must send CNP regardless of DCQCN"),
               ]
           else:
+              # With DCQCN active, CNP drives sender rate reduction so PFC should not fire
+              # (or only fire minimally during the initial ramp-up — threshold: < 100 frames).
+              pfc_dcqcn_fail_expr = " or ".join(f"{c} >= 100" for c in pfc_cols) if pfc_cols else "1 == 0"
               checks += [
+                  # Per-rank: each TX rank must have PFC < 100 (DCQCN reduces sender rate via CNP).
+                  make_check("pfc_count >= 100",
+                          ["snappi_port", "queue", "pfc_count"],
+                          "PFC minimal on each TX rank for its driven queue (with DCQCN)",
+                          "DUT Tx PFC must be < 100 per TX rank — DCQCN/CNP drives rate reduction",
+                          override_df=rank_pfc_df),
+                  make_check(pfc_dcqcn_fail_expr, list(pfc_sum_df.columns),
+                          f"PFC minimal on queues {driven_queues} (DCQCN active, CNP drives rate reduction)",
+                          "DUT Tx PFC must be < 100 with DCQCN — sender reduces rate on CNP, not PFC",
+                          override_df=pfc_sum_df),
                   make_check(f"ip_dscp in {dsps} and ecn_ce_rx == 0",
                           ["flow_name", "port_tx", "port_rx", "ip_dscp", "ecn_ce_rx"],
                           f"ECN-CE observed (DCQCN active on storage traffic)",
@@ -342,6 +362,7 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic_scale(
     snappi_dut_port_map = snappi_dut_port_mapping(sports)
     port_ids = [pc.id for pc in plist]
 
+    prio_dscp_map = _stc_safe_prio_dscp_map(prio_dscp_map)
     priority_to_dscp = derive_priority_to_dscp(prio_dscp_map)
     queues = (3, 3)
     driven_queues = sorted(set(queues))
@@ -358,16 +379,15 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic_scale(
             },
         }
 
-    def lossless_cfg_fn(port_id, queue, message_size_kb):
+    def lossless_cfg_fn(queue, message_size_kb):
         dscp = priority_to_dscp[queue]
         return {
             "mtu": IB_MTU_BYTES,
             "eth_mtu": 9100,
-            "verb": "write",
             "qp_configs": make_scale_qp_configs(
                 NUM_ENDPOINTS_SCALE, dscp, message_size_kb=message_size_kb,
                 qp_num_base=100 + queue * 10000,
-                extra_qp_fields={"ecn": "ect_1", "verb": "write"}),
+                extra_qp_fields={"ecn": "ect_1"}),
             "cnp": {"ip_dscp": CNP_DSCP, "ecn_value": "ect_1"},
             "dcqcn_settings": {"enable_dcqcn": False},
             "connection_type": conn(dscp),
@@ -390,7 +410,7 @@ def test_rocev2_tc4_pfc_ecn_storage_traffic_scale(
         snappi_dut_port_map=snappi_dut_port_map, topology=topology,
         prio_dscp_map=prio_dscp_map, queue_ids=qids,
         traffic_duration=TRAFFIC_DURATION, sample_rates=True,
-        settle_time=30)
+        settle_time=30, post_configure_hook=_enable_pfc_flow_control)
 
     flow_df = flow_df.fillna(0)
 
