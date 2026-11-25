@@ -189,6 +189,13 @@ class Scopes(unittest.TestCase):
         self.assertEqual(r.rc, 0, r.stderr)
         self.assertIn("testbed.dut.hostname", r.stderr)
 
+    def test_show_scope_lists_all_missing_testbed_keys_on_one_line(self):
+        r = run("physical_ex1.yaml", "show")
+        lines = [ln for ln in r.stderr.splitlines() if "not valid for the test stages" in ln]
+        self.assertEqual(len(lines), 1, r.stderr)
+        for key in ("testbed.dut.hostname", "testbed.otg.credentials.user", "testbed.topology.vlan.mac"):
+            self.assertIn(key, lines[0])
+
     def test_show_scope_still_fails_on_deployment_errors(self):
         r = run(mutated("physical_ex1.yaml", lambda c: c["deployment"].pop("target")), "show")
         self.assertEqual(r.rc, 1)

@@ -692,13 +692,21 @@ def main():
 
     maxlvl = SCOPE_LEVEL[scope]
     fatal = []
+    demoted_missing = []
     for level, msg in rep.errors:
         if level == 0:
             fatal.append(msg)
         elif scope == "show":
-            rep.warn(f"not valid for the test stages: {msg}")
+            # --show-config must work on a deploy-only or minimal-access file: testbed:
+            # problems are only reported. Missing keys are listed on a single line.
+            if msg.startswith("missing required key: "):
+                demoted_missing.append(msg.split(": ", 1)[1])
+            else:
+                rep.warn(f"not valid for the test stages: {msg}")
         elif level <= maxlvl:
             fatal.append(msg)
+    if demoted_missing:
+        rep.warn("not valid for the test stages - missing required key(s): " + ", ".join(demoted_missing))
     if fatal:
         sys.stderr.write("Config validation failed (%s):\n" % path)
         for msg in fatal:
