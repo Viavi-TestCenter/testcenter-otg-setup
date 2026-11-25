@@ -27,7 +27,11 @@ _phase_env_check_impl() {
 
     _ensure_docker
     _ensure_docker_compose
-    _ensure_containerlab
+    # containerlab only deploys the virtual chassis and DUT; with deployment.target: physical it never
+    # runs, so do not `curl | bash` an installer onto a host (possibly air-gapped) that does not need it.
+    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+        _ensure_containerlab
+    fi
     _ensure_python_deps
 }
 

@@ -114,6 +114,21 @@ check "smoke-test (virtual, push not yet done): pushes first" \
 check "smoke-test (physical, deploy_minigraph: true, not yet done): pushes" \
     "$(run_mode smoke-test physical 1 0)" "require_deployed_environment access_check gen_config deploy_mg smoke_test cleanup_cache report"
 
+# --- docker bootstrap (review M3): --gen-config never needed a reachable docker daemon (it skips the
+# inventory check with a warning), so it must not start prompting for sudo / dying without one.
+needs_docker() {
+    local m="$1"   # before `set --` below, which clears the positional parameters
+    ( export SNAPPI_SOURCE_ONLY=1; set --
+      # shellcheck disable=SC1090
+      source "$SCRIPT"
+      declare -F mode_needs_docker >/dev/null || { echo undefined; exit 0; }
+      MODE="$m"; mode_needs_docker && echo yes || echo no ) 2>/dev/null
+}
+check "gen-config does not bootstrap docker" "$(needs_docker gen-config)" "no"
+for m in full deploy-only access-check deploy-mg pretest smoke-test test-only destroy; do
+    check "$m bootstraps docker" "$(needs_docker $m)" "yes"
+done
+
 # --- syntax of everything that was touched
 for f in "$SCRIPT" "$HERE"/../lib/*.sh; do
     if bash -n "$f" 2>/dev/null; then echo "ok   - bash -n $(basename "$f")"; else echo "FAIL - bash -n $f"; fails=$((fails + 1)); fi

@@ -15,6 +15,9 @@
 # replace the whole tool-owned environment, same scope as --destroy).
 phase_check_version_change() {
     state_owns "$STATE_FILE" OWN_CLAB || return 0
+    # No version configured (e.g. physical, with nothing deployed that is chosen by version): there is
+    # nothing to compare, and comparing against "" would tear a leftover virtual lab down ("replaced by .").
+    [[ -n "$CFG_TC_VERSION" ]] || return 0
 
     local cname
     cname="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -- '-snappi-sonic-stc$' | head -1)"

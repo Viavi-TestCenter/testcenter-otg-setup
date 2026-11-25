@@ -63,5 +63,24 @@ check "mixed compose/standalone is never treated as the combined stack" \
     "$(run_phase docker-compose standalone physical)" \
     "rc=0 labserver otg allure"
 
+# --- phase_check_version_change (review M8): with no version configured (physical, nothing deployed is
+# chosen by version) a leftover tool-owned virtual chassis must not be compared against "" and torn
+# down with the message "replaced by .".
+version_change() {
+    local configured="$1"
+    (
+        CFG_TC_VERSION="$configured"; CFG_REPLACE_ENV_ON_VERSION_CHANGE=1; STATE_FILE=/dev/null
+        state_owns() { return 0; }
+        docker() { case "$1" in ps) echo "clab-lab-snappi-sonic-stc" ;; inspect) echo "stc:5.65.2556" ;; esac; }
+        phase_destroy() { echo destroyed; }
+        record_phase() { :; }; log_info() { :; }; log_warn() { :; }
+        phase_check_version_change
+        echo end
+    ) | tr '\n' ' '
+}
+check "version change: same version keeps the environment" "$(version_change 5.65.2556)" "end "
+check "version change: a different version replaces it" "$(version_change 5.62.0766)" "destroyed end "
+check "no version configured: the leftover virtual environment is NOT torn down" "$(version_change '')" "end "
+
 echo
 if [[ "$fails" -eq 0 ]]; then echo "ALL PASSED"; else echo "$fails FAILED"; exit 1; fi

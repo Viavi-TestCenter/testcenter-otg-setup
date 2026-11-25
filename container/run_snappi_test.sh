@@ -169,6 +169,14 @@ https://www.viavisolutions.com/support"
     fi
 }
 
+# Does this mode need a reachable docker daemon from the start? --gen-config does not: it only
+# writes host-side files and skips its inventory check with a warning when the sonic-mgmt
+# container (or docker itself) is not available, so it must not prompt for sudo or die
+# without docker (docker_bootstrap_sudo does both).
+mode_needs_docker() {
+    [[ "$MODE" != "gen-config" ]]
+}
+
 # The post-deploy modes assume stage 1 already ran: the sonic-mgmt container
 # must be up and the source checkout present.
 require_deployed_environment() {
@@ -397,7 +405,9 @@ fi
 
 # Foreground and before anything backgrounds docker calls (run_phase_with_spinner) -
 # see docker_bootstrap_sudo in lib/common.sh.
-docker_bootstrap_sudo
+if mode_needs_docker; then
+    docker_bootstrap_sudo
+fi
 
 LOG_DIR="$LOG_BASE_DIR/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
