@@ -33,6 +33,8 @@ Test hook: SNAPPI_HOST_IP_OVERRIDE replaces `hostname -I` (an empty value
 simulates a failed detection).
 """
 import copy
+import difflib
+import ipaddress
 import os
 import shlex
 import subprocess
@@ -55,7 +57,56 @@ LEGACY_TOP_KEYS = ("images", "testcenter", "dut", "otg", "sonic_mgmt", "cleanup"
 LEGACY_DEPLOYMENT_KEYS = ("mode", "labserver", "otg_service", "stc_chassis", "docker_compose")
 LEGACY_TESTBED_KEYS = ("conf_name", "inv_name", "dut_group_name", "server_group")
 
-LOOPBACK = ("127.0.0.1", "localhost")
+LIST = "list"  # schema marker: a list of mappings
+
+# Every key config.yaml knows, for the unknown-key warning. A leaf is None, a mapping is a dict.
+_CRED = {"user": None, "password": None}
+SCHEMA = {
+    "deployment": {
+        "target": None,
+        "images": {"dir": None},
+        "otg_labserver": {
+            "host_ip": None,
+            "docker_compose": {"enabled": None, "keep_build_image": None},
+            "labserver": {"mode": None},
+            "otg_service": {"mode": None},
+        },
+        "stc": {"version": None, "license_server": None, "mgmt_ip": None},
+        "dut_vs": {
+            "image": None, "image_archive": None, "build_sonic_vs": None, "download_source": None,
+            "keep_dut_artifacts": None, "keep_dut_image": None, "hostname": None, "mgmt_ip": None,
+            "hwsku": None, "credentials": _CRED, "link_count": None,
+        },
+        "sonic_mgmt": {
+            "source_dir": None, "repo": None, "branch": None, "baseline_commit": None,
+            "patch": {"apply": None, "file": None},
+            "custom_tests": {"overwrite": None, "source_dir": None},
+            "keep_sonic_mgmt_src": None,
+        },
+        "allure": {"enabled": None, "host": None, "ui_port": None, "api_port": None},
+        "cleanup": {"env_on_failure": None, "replace_on_version_change": None},
+        "logging": {"dir": None},
+    },
+    "testbed": {
+        "endpoints": {
+            "stc_chassis_ip": None, "labserver_ip": None,
+            "otg_service": {"ip": None, "port": None},
+        },
+        "dut": {
+            "hostname": None, "mgmt_ip": None, "hwsku": None, "credentials": _CRED,
+            "iface_speed": None, "total_ports": None,
+            "links": {LIST: {"dut_port": None, "stc_port": None, "bandwidth": None, "vlan_id": None}},
+        },
+        "otg": {"credentials": _CRED, "ssh_user": None},
+        "deploy_minigraph": None,
+        "definition": {"conf_name": None, "inv_name": None, "dut_group_name": None, "server_group": None},
+        "topology": {
+            "name": None, "dut_type": None,
+            "vlan": {"id": None, "prefix": None, "prefix_v6": None, "tag": None, "mac": None},
+        },
+        "reporting": {"allure_project_id": None},
+    },
+}
 OTG_DEPLOYED_PORT = 50051  # hard-coded in otg-compose.yaml and the otgctl default
 PLACEHOLDER_NOTE = (
     "(config.yaml uses the legacy layout, so key names above are those of the new layout - "
@@ -133,6 +184,50 @@ def detect_host_ip():
     except Exception:
         return ""
     return out[0] if out else ""
+
+
+def is_loopback(v):
+    """localhost, 127.0.0.0/8 (incl. Debian's 127.0.1.1 hostname alias) and ::1, any case."""
+    if not isinstance(v, str):
+        return False
+    s = v.strip().lower()
+    if s == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(s).is_loopback
+    except ValueError:
+        return False
+
+
+def check_unknown_keys(node, schema, prefix, rep):
+    """Warn (never fail) about keys the schema does not know, with a 'did you mean' hint: a typo
+    otherwise silently falls back to a default (e.g. docker_compose.enabled: true)."""
+    if not isinstance(node, dict) or not isinstance(schema, dict):
+        return
+    for key, value in node.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if key not in schema:
+            near = difflib.get_close_matches(str(key), [k for k in schema if k != LIST], n=1)
+            hint = f" (did you mean '{near[0]}'?)" if near else ""
+            rep.warn(f"unknown key {path} - ignored{hint}")
+            continue
+        sub = schema[key]
+        if isinstance(sub, dict) and LIST in sub:
+            if isinstance(value, list):
+                for i, item in enumerate(value):
+                    check_unknown_keys(item, sub[LIST], f"{path}[{i}]", rep)
+        elif isinstance(sub, dict):
+            check_unknown_keys(value, sub, path, rep)
+
+
+def mask_secrets(node):
+    """Mask every non-empty `password` value (the tool redacts passwords in its logs too)."""
+    if isinstance(node, dict):
+        return {k: ("********" if k == "password" and isinstance(v, str) and v else mask_secrets(v))
+                for k, v in node.items()}
+    if isinstance(node, list):
+        return [mask_secrets(x) for x in node]
+    return node
 
 
 def q(v):
@@ -235,7 +330,7 @@ def migrate_legacy(cfg, rep):
     lab_ip = g("deployment.labserver.ip", "")
     otg_ip = g("deployment.otg_service.ip", "")
     otg_port = g("deployment.otg_service.port", OTG_DEPLOYED_PORT)
-    norm = lambda ip: "" if ip in LOOPBACK else ip  # noqa: E731
+    norm = lambda ip: "" if is_loopback(ip) else ip  # noqa: E731
     if mode in ("docker-compose", "standalone"):
         a, b = norm(lab_ip), norm(otg_ip)
         if a and b and a != b:
@@ -392,16 +487,39 @@ def resolve(cfg, scope, rep):
     out["CFG_TC_OTGSERVICE_VERSION"] = ".".join(version.split(".")[:2]) if version else ""
     out["CFG_TC_LICENSE_SERVER"] = license_server
 
-    # ---- host address of this machine: used for every component this tool deploys
+    # ---- this machine's address. A loopback address means "this host" only to a caller running on
+    # this host's network; the sonic-mgmt container's gRPC client and otgctl need the real address.
+    # So a loopback Labserver/OTG address is resolved wherever it comes from: host_ip for what this
+    # tool deploys, and the testbed.endpoints.* of an external (provisioned) service alike.
+    detected_cache = []
+
+    def this_host():
+        if not detected_cache:
+            detected_cache.append(detect_host_ip())
+        return detected_cache[0]
+
+    def unloop(label, value):
+        if not is_loopback(value):
+            return value
+        detected = this_host()
+        if detected:
+            rep.info(f"{label} is loopback ({value}) - resolving to this host's address ({detected})")
+            return detected
+        rep.warn(
+            f"{label} is loopback ({value}) but this host's address could not be auto-detected (hostname -I) - "
+            f"set a reachable address explicitly; keeping {value}, which the sonic-mgmt container cannot reach"
+        )
+        return value
+
     host_ip = ""
     if lab_deployed or otg_deployed:
         explicit = host_ip_cfg.strip()
-        if explicit and explicit not in LOOPBACK:
+        if explicit and not is_loopback(explicit):
             host_ip = explicit
         else:
-            detected = detect_host_ip()
+            detected = this_host()
             if detected:
-                if explicit in LOOPBACK:
+                if explicit and is_loopback(explicit):
                     rep.info(f"deployment.otg_labserver.host_ip is loopback ({explicit}) - resolving to this host's address ({detected})")
                 host_ip = detected
             else:
@@ -446,6 +564,7 @@ def resolve(cfg, scope, rep):
     else:
         # a standalone OTG service is started against this address, so deploy-only needs it too
         lab_ip = req(rep, cfg, "testbed.endpoints.labserver_ip", str, nonempty=True, level=0 if otg_deployed else 1) or ""
+        lab_ip = unloop("testbed.endpoints.labserver_ip", lab_ip)
         lab_owner = "testbed"
         if virtual:
             rep.warn(
@@ -467,6 +586,7 @@ def resolve(cfg, scope, rep):
               f"({OTG_DEPLOYED_PORT}): remove it", 1)
     else:
         otg_ip = req(rep, cfg, "testbed.endpoints.otg_service.ip", str, nonempty=True, level=1) or ""
+        otg_ip = unloop("testbed.endpoints.otg_service.ip", otg_ip)
         otg_port = ep("otg_service.port", OTG_DEPLOYED_PORT)
         if not is_int(otg_port) or not 1 <= otg_port <= 65535:
             E("testbed.endpoints.otg_service.port must be an integer between 1 and 65535", 1)
@@ -704,6 +824,9 @@ def main():
         elif print_migrated:
             sys.stderr.write(f"ERROR: {path} is already in the new deployment:/testbed: layout - nothing to migrate\n")
             sys.exit(1)
+        else:
+            # the legacy mapper copies keys selectively, so only a native file can have typos to report
+            check_unknown_keys(cfg, SCHEMA, "", rep)
         if print_migrated:
             scope = "show"  # print what can be migrated; testbed: problems are not fatal here
         values = resolve(cfg, scope, rep)
@@ -741,8 +864,9 @@ def main():
         sys.stdout.write(
             "# Migrated in memory from the legacy flat layout (run_snappi_test.sh --show-config).\n"
             "# Review it, then save it as config.yaml to stop the deprecation warning.\n"
+            "# NOTE: passwords are masked as ******** - copy the real values from your old config.yaml.\n"
         )
-        sys.stdout.write(yaml.safe_dump(prune_empty(cfg), sort_keys=False, default_flow_style=False))
+        sys.stdout.write(yaml.safe_dump(mask_secrets(prune_empty(cfg)), sort_keys=False, default_flow_style=False))
         return
     print("\n".join(f"{k}={q(v)}" for k, v in values.items()))
 

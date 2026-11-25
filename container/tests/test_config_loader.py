@@ -166,10 +166,25 @@ class PrintMigrated(unittest.TestCase):
         self.assertEqual(migrated["deployment"]["target"], "virtual")
         self.assertNotIn("host_interface", out)
 
+    def test_passwords_are_masked_in_the_printed_layout(self):
+        # Review M2: --show-config never printed secrets (people paste it into tickets); the
+        # migrated block must not start doing so. The tool already redacts passwords in its logs.
+        rc, out, err = self.migrated_yaml()
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("password: admin", out)
+        self.assertGreaterEqual(out.count("********"), 2)       # DUT and OTG passwords
+        self.assertIn("passwords are masked", out)
+
     def test_migrated_output_resolves_to_exactly_the_same_values_as_the_legacy_file(self):
         rc, out, err = self.migrated_yaml()
         self.assertEqual(rc, 0, err)
-        legacy, again = run("legacy_main.yaml"), run(yaml.safe_load(out))
+
+        def unmask(node):  # the legacy fixture's passwords are all "admin"
+            if isinstance(node, dict):
+                return {k: ("admin" if v == "********" else unmask(v)) for k, v in node.items()}
+            return node
+
+        legacy, again = run("legacy_main.yaml"), run(unmask(yaml.safe_load(out)))
         self.assertEqual(again.rc, 0, again.stderr)
         again.vars.pop("CFG_CONFIG_LEGACY"), legacy.vars.pop("CFG_CONFIG_LEGACY")
         self.assertEqual(legacy.vars, again.vars)
@@ -383,6 +398,89 @@ class HostIp(unittest.TestCase):
         self.assertEqual(r.vars["CFG_LABSERVER_IP"], "127.0.0.1")
         self.assertIn("could not be auto-detected", r.stderr)
         self.assertIn("deployment.otg_labserver.host_ip", r.stderr)
+
+
+class LoopbackServices(unittest.TestCase):
+    """Review I1/M7: the base resolved a loopback Labserver/OTG address in EVERY mode (the sonic-mgmt
+    container and otgctl cannot reach this host through loopback); an external (provisioned) service
+    written as 127.0.0.1/localhost must still get this host's real address."""
+
+    def test_legacy_provisioned_loopback_services_resolve_to_this_host(self):
+        def f(c):
+            c["deployment"]["mode"] = "provisioned"
+            c["deployment"]["labserver"]["ip"] = "127.0.0.1"
+            c["deployment"]["otg_service"]["ip"] = "localhost"
+        r = run(mutated("legacy_main.yaml", f))
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual(r.vars["CFG_LABSERVER_IP"], HOST)
+        self.assertEqual(r.vars["CFG_OTG_SERVICE_IP"], HOST)
+        self.assertEqual((r.vars["CFG_LABSERVER_OWNER"], r.vars["CFG_OTG_SERVICE_OWNER"]), ("testbed", "testbed"))
+        self.assertIn("loopback", r.stderr)
+
+    def test_new_layout_provisioned_loopback_services_resolve_to_this_host(self):
+        def f(c):
+            c["testbed"]["endpoints"]["labserver_ip"] = "localhost"
+            c["testbed"]["endpoints"]["otg_service"]["ip"] = "127.0.1.1"
+        r = run(mutated("physical_ex3.yaml", f), "access")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual(r.vars["CFG_LABSERVER_IP"], HOST)
+        self.assertEqual(r.vars["CFG_OTG_SERVICE_IP"], HOST)
+
+    def test_every_loopback_spelling_is_recognised(self):
+        for value in ("LOCALHOST", "Localhost", "127.0.1.1", "127.1.2.3", "::1"):
+            with self.subTest(host_ip=value):
+                cfg = mutated("virtual_full.yaml", lambda c: c["deployment"]["otg_labserver"].update(host_ip=value))
+                self.assertEqual(run(cfg).vars["CFG_LABSERVER_IP"], HOST)
+
+    def test_a_real_provisioned_address_is_used_as_is(self):
+        self.assertEqual(run("physical_ex3.yaml", "access").vars["CFG_LABSERVER_IP"], "10.0.0.21")
+
+    def test_failed_detection_keeps_a_provisioned_loopback_and_warns(self):
+        cfg = mutated("physical_ex3.yaml", lambda c: c["testbed"]["endpoints"].update(labserver_ip="127.0.0.1"))
+        r = run(cfg, "access", host="")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual(r.vars["CFG_LABSERVER_IP"], "127.0.0.1")
+        self.assertIn("could not be auto-detected", r.stderr)
+
+    def test_chassis_and_dut_addresses_are_never_rewritten(self):
+        cfg = mutated("physical_ex3.yaml", lambda c: c["testbed"]["endpoints"].update(stc_chassis_ip="127.0.0.1"))
+        self.assertEqual(run(cfg, "access").vars["CFG_STC_CHASSIS_IP"], "127.0.0.1")
+
+
+class UnknownKeys(unittest.TestCase):
+    """Review M10: a typo under a known section must not be silently ignored (it falls back to a
+    default, e.g. docker_compose.enabled: true would deploy a Labserver next to a provisioned one)."""
+
+    def test_shipped_config_and_every_new_layout_fixture_have_no_unknown_key_warnings(self):
+        names = ["virtual_full.yaml", "virtual_deploy_only.yaml", "physical_ex1.yaml", "physical_ex1_full.yaml",
+                 "physical_ex2.yaml", "physical_ex3.yaml", os.path.abspath(os.path.join(HERE, "..", "config.yaml"))]
+        for name in names:
+            with self.subTest(file=os.path.basename(name)):
+                self.assertNotIn("unknown key", run(name, "show").stderr)
+
+    def test_typo_under_docker_compose_is_warned_with_a_suggestion(self):
+        cfg = mutated("virtual_full.yaml",
+                      lambda c: c["deployment"]["otg_labserver"].update(docker_compose={"enable": False}))
+        r = run(cfg)
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertIn("unknown key deployment.otg_labserver.docker_compose.enable", r.stderr)
+        self.assertIn("did you mean 'enabled'", r.stderr)
+
+    def test_typo_in_testbed_is_warned(self):
+        cfg = mutated("virtual_full.yaml", lambda c: c["testbed"]["dut"].update(iface_spead="40000"))
+        self.assertIn("unknown key testbed.dut.iface_spead", run(cfg).stderr)
+
+    def test_unknown_key_in_a_link_entry_is_warned(self):
+        cfg = mutated("virtual_full.yaml", lambda c: c["testbed"]["dut"]["links"][0].update(host_interface=""))
+        self.assertIn("unknown key testbed.dut.links[0].host_interface", run(cfg).stderr)
+
+    def test_unknown_keys_are_warnings_never_errors(self):
+        cfg = mutated("virtual_full.yaml", lambda c: c["deployment"].update(not_a_key=1))
+        self.assertEqual(run(cfg).rc, 0)
+
+    def test_legacy_files_are_not_checked(self):
+        cfg = mutated("legacy_main.yaml", lambda c: c["dut"].update(not_a_key=1))
+        self.assertNotIn("unknown key", run(cfg).stderr)
 
 
 class DeployMinigraph(unittest.TestCase):
