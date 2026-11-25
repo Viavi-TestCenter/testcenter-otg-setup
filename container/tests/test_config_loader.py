@@ -40,7 +40,7 @@ def fixture(name):
         return yaml.safe_load(f)
 
 
-def run(cfg, scope=None, host=HOST):
+def run(cfg, scope=None, host=HOST, extra=()):
     """cfg is a fixture file name or a dict. host=None removes the override."""
     with tempfile.TemporaryDirectory() as d:
         if isinstance(cfg, str):
@@ -52,6 +52,7 @@ def run(cfg, scope=None, host=HOST):
         cmd = [sys.executable, LOADER, path]
         if scope:
             cmd += ["--scope", scope]
+        cmd += list(extra)
         env = dict(os.environ)
         env.pop("SNAPPI_HOST_IP_OVERRIDE", None)
         if host is not None:
@@ -71,6 +72,8 @@ class LegacyAndLayout(unittest.TestCase):
         legacy, twin = run("legacy_main.yaml"), run("virtual_full.yaml")
         self.assertEqual(legacy.rc, 0, legacy.stderr)
         self.assertEqual(twin.rc, 0, twin.stderr)
+        # CFG_CONFIG_LEGACY says which file format was read, not anything about the lab
+        self.assertEqual((legacy.vars.pop("CFG_CONFIG_LEGACY"), twin.vars.pop("CFG_CONFIG_LEGACY")), ("1", "0"))
         self.assertEqual(legacy.vars, twin.vars)
         self.assertIn("deprecated", legacy.stderr.lower())
         self.assertIn("host_interface", legacy.stderr)
@@ -139,9 +142,48 @@ class ShippedConfig(unittest.TestCase):
     def test_shipped_config_describes_the_same_lab_as_the_old_shipped_one(self):
         # The only intended difference: allure.enabled now defaults to false (it was true).
         old, new = run("legacy_main.yaml").vars, run(os.path.abspath(self.SHIPPED)).vars
+        old.pop("CFG_CONFIG_LEGACY"), new.pop("CFG_CONFIG_LEGACY")
         self.assertEqual(old.pop("CFG_ALLURE_ENABLED"), "1")
         self.assertEqual(new.pop("CFG_ALLURE_ENABLED"), "0")
         self.assertEqual(old, new)
+
+
+class PrintMigrated(unittest.TestCase):
+    """Proposal §4.6: --show-config prints the migrated layout so users can copy it."""
+
+    def migrated_yaml(self, name="legacy_main.yaml"):
+        with tempfile.TemporaryDirectory() as d:
+            p = subprocess.run([sys.executable, LOADER, os.path.join(FIX, name), "--print-migrated"],
+                               capture_output=True, text=True,
+                               env=dict(os.environ, SNAPPI_HOST_IP_OVERRIDE=HOST))
+            return p.returncode, p.stdout, p.stderr
+
+    def test_legacy_file_is_printed_as_a_valid_new_layout_file(self):
+        rc, out, err = self.migrated_yaml()
+        self.assertEqual(rc, 0, err)
+        migrated = yaml.safe_load(out)
+        self.assertEqual(sorted(migrated), ["deployment", "testbed"])
+        self.assertEqual(migrated["deployment"]["target"], "virtual")
+        self.assertNotIn("host_interface", out)
+
+    def test_migrated_output_resolves_to_exactly_the_same_values_as_the_legacy_file(self):
+        rc, out, err = self.migrated_yaml()
+        self.assertEqual(rc, 0, err)
+        legacy, again = run("legacy_main.yaml"), run(yaml.safe_load(out))
+        self.assertEqual(again.rc, 0, again.stderr)
+        again.vars.pop("CFG_CONFIG_LEGACY"), legacy.vars.pop("CFG_CONFIG_LEGACY")
+        self.assertEqual(legacy.vars, again.vars)
+        self.assertNotIn("deprecated", again.stderr.lower())
+
+    def test_a_file_in_the_new_layout_has_nothing_to_migrate(self):
+        rc, out, err = self.migrated_yaml("virtual_full.yaml")
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("nothing to migrate", err)
+
+    def test_layout_is_exported_for_the_shell(self):
+        self.assertEqual(run("legacy_main.yaml").vars["CFG_CONFIG_LEGACY"], "1")
+        self.assertEqual(run("virtual_full.yaml").vars["CFG_CONFIG_LEGACY"], "0")
 
 
 class Scopes(unittest.TestCase):

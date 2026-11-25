@@ -190,7 +190,7 @@ deployment:
                                   # error at the first stage that reads testbed:. Prefer omitting it.
 
   sonic_mgmt:
-    source_dir: ""                # empty => clone fresh under workspace/sonic-mgmt next to this config;
+    source_dir: ""                # empty => clone fresh under .run_snappi_test/sonic-mgmt next to this config;
                                   # set to an existing checkout (e.g. wk_snappi_container_test) to reuse it as-is
     repo: "https://github.com/sonic-net/sonic-mgmt.git"
     branch: "master"

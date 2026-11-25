@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-config_loader.py <config.yaml> [--scope deploy|access|full|show]
+config_loader.py <config.yaml> [--scope deploy|access|full|show] [--print-migrated]
 
 Loads and strictly validates run_snappi_test.sh's config.yaml, then emits it
 on stdout as shell-safe `CFG_*` variable assignments for `eval` by bash.
@@ -47,7 +47,7 @@ except ImportError:
     )
     sys.exit(2)
 
-USAGE = "usage: config_loader.py <config.yaml> [--scope deploy|access|full|show]\n"
+USAGE = "usage: config_loader.py <config.yaml> [--scope deploy|access|full|show] [--print-migrated]\n"
 SCOPE_LEVEL = {"deploy": 0, "access": 1, "full": 2, "show": 2}
 
 # Keys that only exist in the previous flat layout.
@@ -160,6 +160,14 @@ def detect_legacy(cfg):
     """True when the file is in the previous flat layout (decided by schema, not by the
     presence of deployment:/testbed:, which both layouts use)."""
     return bool(legacy_evidence(cfg))
+
+
+def prune_empty(d):
+    """Drop empty mappings (e.g. an endpoints: {} left by the migration) before printing."""
+    if not isinstance(d, dict):
+        return d
+    pruned = {k: prune_empty(v) for k, v in d.items()}
+    return {k: v for k, v in pruned.items() if v != {}}
 
 
 def migrate_legacy(cfg, rep):
@@ -644,7 +652,7 @@ def usage_error(msg=None):
 
 def main():
     argv = sys.argv[1:]
-    scope, path, i = "full", None, 0
+    scope, path, i, print_migrated = "full", None, 0, False
     while i < len(argv):
         a = argv[i]
         if a == "--scope":
@@ -653,6 +661,8 @@ def main():
             scope, i = argv[i + 1], i + 2
         elif a.startswith("--scope="):
             scope, i = a.split("=", 1)[1], i + 1
+        elif a == "--print-migrated":
+            print_migrated, i = True, i + 1
         elif path is None and not a.startswith("-"):
             path, i = a, i + 1
         else:
@@ -691,7 +701,13 @@ def main():
         if detect_legacy(cfg):
             legacy = True
             cfg = migrate_legacy(cfg, rep)
+        elif print_migrated:
+            sys.stderr.write(f"ERROR: {path} is already in the new deployment:/testbed: layout - nothing to migrate\n")
+            sys.exit(1)
+        if print_migrated:
+            scope = "show"  # print what can be migrated; testbed: problems are not fatal here
         values = resolve(cfg, scope, rep)
+        values["CFG_CONFIG_LEGACY"] = flag(legacy)
 
     maxlvl = SCOPE_LEVEL[scope]
     fatal = []
@@ -720,6 +736,14 @@ def main():
 
     for kind, msg in rep.notes:
         sys.stderr.write(f"{kind}: {msg}\n")
+    if print_migrated:
+        # Proposal §4.6: --show-config prints the migrated layout so users can copy it.
+        sys.stdout.write(
+            "# Migrated in memory from the legacy flat layout (run_snappi_test.sh --show-config).\n"
+            "# Review it, then save it as config.yaml to stop the deprecation warning.\n"
+        )
+        sys.stdout.write(yaml.safe_dump(prune_empty(cfg), sort_keys=False, default_flow_style=False))
+        return
     print("\n".join(f"{k}={q(v)}" for k, v in values.items()))
 
 

@@ -59,7 +59,8 @@
 #   --show-config         Load, validate and print the resolved run configuration (including
 #                          each component's address and which section owns it), then exit.
 #                          Read-only - no lock, no log dir, no phases run. testbed: problems are
-#                          shown as warnings.
+#                          shown as warnings. For a legacy flat config.yaml it also prints the
+#                          migrated deployment:/testbed: layout so you can copy it.
 #   --list-versions       Scan deployment.images.dir and report which TestCenter (STC) versions
 #                          are currently deliverable/testable (STC + labserver artifacts
 #                          present, OTG service installer matching major.minor), plus
@@ -378,6 +379,14 @@ check_license_server
 
 if [[ "$MODE" == "show-config" ]]; then
     print_run_config
+    # A legacy flat file is migrated in memory on every run (with a deprecation warning);
+    # print the migrated layout so it can be copied into config.yaml.
+    if [[ "${CFG_CONFIG_LEGACY:-0}" == "1" ]]; then
+        echo
+        echo "================ MIGRATED LAYOUT (copy into config.yaml) ================"
+        python3 "$LIB_DIR/config_loader.py" "$CONFIG_FILE" --print-migrated 2>/dev/null
+        echo "========================================================================="
+    fi
     exit 0
 fi
 

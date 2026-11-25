@@ -10,7 +10,7 @@
 #
 # cleanup_env_on_failure auto-tears-down tool-owned environment resources
 # after a FAILED run, controlled by deployment.cleanup.env_on_failure in config.yaml
-# (default: true). It uses the exact same scope as --destroy (phase_destroy)
+# (default: false). It uses the exact same scope as --destroy (phase_destroy)
 # - only resources this tool created are ever removed. A successful run
 # never calls this - the environment is always left deployed for reuse.
 
