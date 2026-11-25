@@ -370,16 +370,19 @@ def resolve(cfg, scope, rep):
 
     # ---- stc
     needs_version = virtual or lab_deployed or otg_deployed
-    needs_license = virtual or lab_deployed
     version = req(rep, cfg, "deployment.stc.version", str, nonempty=True) if needs_version else get(cfg, "deployment.stc.version", "")
     version = version if isinstance(version, str) else ""
-    license_server = req(rep, cfg, "deployment.stc.license_server", str, nonempty=True) if needs_license else get(cfg, "deployment.stc.license_server", "")
+    # license_server is needed when target is virtual or this tool deploys a Labserver, but WHETHER a
+    # given run needs a real value is a run-mode rule (traffic modes, --deploy-only), enforced in
+    # run_snappi_test.sh::check_license_server as before - not a schema rule, or it would block
+    # --destroy, --pretest, --access-check ... of a file that simply has none.
+    license_server = opt(rep, cfg, "deployment.stc.license_server", str, "")
     out["CFG_TC_VERSION"] = version
     # Labserver expects an exact match on the STC version (labserver-<version>.tar.xz); OTG service
     # installers are versioned independently, so only the leading major.minor is pinned.
     out["CFG_TC_LABSERVER_VERSION"] = version
     out["CFG_TC_OTGSERVICE_VERSION"] = ".".join(version.split(".")[:2]) if version else ""
-    out["CFG_TC_LICENSE_SERVER"] = license_server if isinstance(license_server, str) else ""
+    out["CFG_TC_LICENSE_SERVER"] = license_server
 
     # ---- host address of this machine: used for every component this tool deploys
     host_ip = ""

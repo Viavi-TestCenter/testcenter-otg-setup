@@ -208,8 +208,20 @@ class VersionAndLicense(unittest.TestCase):
         self.assertEqual(r.rc, 1)
         self.assertIn("deployment.stc.version", r.stderr)
 
-    def test_license_server_required_when_a_labserver_is_deployed(self):
-        r = run(mutated("physical_ex1.yaml", lambda c: c["deployment"]["stc"].pop("license_server")), "deploy")
+    def test_license_server_value_is_a_run_mode_rule_not_a_loader_requirement(self):
+        # proposal §4 item 5: the license check "stays in run_snappi_test.sh as today, gated by run
+        # mode" (tests/test_license_gate.sh). The loader must not block --destroy, --pretest,
+        # --access-check, ... of a config that simply has no license_server.
+        for fixture_name, scope in (("physical_ex1.yaml", "deploy"), ("virtual_full.yaml", "full")):
+            with self.subTest(fixture=fixture_name):
+                cfg = mutated(fixture_name, lambda c: c["deployment"]["stc"].pop("license_server"))
+                r = run(cfg, scope)
+                self.assertEqual(r.rc, 0, r.stderr)
+                self.assertEqual(r.vars["CFG_TC_LICENSE_SERVER"], "")
+
+    def test_license_server_must_be_a_string_when_present(self):
+        cfg = mutated("virtual_full.yaml", lambda c: c["deployment"]["stc"].update(license_server=12345))
+        r = run(cfg)
         self.assertEqual(r.rc, 1)
         self.assertIn("deployment.stc.license_server", r.stderr)
 
