@@ -37,6 +37,22 @@ log_cmd() { log_info "\$ $(redact "$*")"; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# $SUDO prefixes the few host-level commands that need root (apt/systemctl in the
+# env check, `mount --make-rshared /` on WSL in sonic_mgmt.sh) - never docker, see
+# docker_bootstrap_sudo below. It is resolved here, once, at load time rather than
+# only inside phase_env_check: with --skip-env-check that phase never runs, and
+# the first `$SUDO ...` then aborted the run under `set -u` ("SUDO: unbound variable").
+resolve_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        SUDO=""
+    elif require_cmd sudo; then
+        SUDO="sudo"
+    else
+        SUDO=""
+    fi
+}
+resolve_sudo
+
 # --- docker wrapper: transparently falls back to 'sudo docker' -------------
 # If this shell's docker group membership isn't active yet (e.g. the user
 # was just added to the docker group and hasn't started a fresh login

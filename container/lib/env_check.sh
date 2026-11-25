@@ -17,12 +17,8 @@ phase_env_check() {
 # file) - $SUDO is set here but must still be visible to sonic_mgmt.sh later
 # in this run, so it's relayed back via phase_export.
 _phase_env_check_impl() {
-    if [[ "$(id -u)" -eq 0 ]]; then
-        SUDO=""
-    elif require_cmd sudo; then
-        SUDO="sudo"
-    else
-        SUDO=""
+    resolve_sudo
+    if [[ -z "$SUDO" && "$(id -u)" -ne 0 ]]; then
         log_warn "Not running as root and 'sudo' is not available - installs below may fail."
     fi
     phase_export SUDO "$SUDO"
