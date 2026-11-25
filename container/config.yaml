@@ -154,7 +154,7 @@ deployment:
 
   dut_vs:                         # virtual target only (sonic-vs)
     image: "vrnetlab/sonic_sonic-vs:master"
-    image_archive: ""             # empty = auto-detect sonic-vs-*.tar.gz under images.dir
+    image_archive: ""             # empty = auto-detect sonic-vs-*.tar.gz under deployment.images.dir
     build_sonic_vs: true          # (optional, default true) If image is not found in 'docker images' and no archive
                                   # is found/configured, and image's repository is exactly "vrnetlab/sonic_sonic-vs",
                                   # automatically build it by downloading sonic-vs.img.gz for image's tag (e.g.
@@ -173,7 +173,7 @@ deployment:
                                   # local image, regardless of its tag.
     keep_dut_artifacts: true      # (optional, default true) If build_sonic_vs built the sonic-vs image at least
                                   # once, --destroy (and same-scope teardowns) will NOT remove the downloaded/built
-                                  # artifacts under images.dir/vrnetlab (the vrnetlab source checkout and the
+                                  # artifacts under deployment.images.dir/vrnetlab (the vrnetlab source checkout and the
                                   # extracted sonic-vs-*.qcow2), so the next build skips re-cloning/re-downloading.
                                   # false = also remove them on destroy. No effect if build_sonic_vs never built.
     keep_dut_image: true          # (optional, default true) If build_sonic_vs built the sonic-vs docker image at
@@ -212,7 +212,7 @@ deployment:
       source_dir: "../example/sonic_snappi/tests"   # directory mirroring sonic-mgmt's tests/ layout;
                                                     # relative paths resolve against this file's own directory
     keep_sonic_mgmt_src: true     # (optional, default false) If true, --destroy (and
-                                  # cleanup.env_on_failure/replace_on_version_change teardowns) will NOT delete a
+                                  # deployment.cleanup.env_on_failure/replace_on_version_change teardowns) will NOT delete a
                                   # tool-owned sonic-mgmt clone (source_dir empty) - every other tool-owned
                                   # resource is still removed. Has no effect on a user-supplied checkout
                                   # (source_dir set), which is never deleted by this tool regardless.
@@ -243,7 +243,7 @@ deployment:
   logging:
     dir: ""                       # empty = "logs" under the current working directory (where the script is
                                   # invoked from); set to override (relative paths resolve against this file's
-                                  # own directory, like images.dir above)
+                                  # own directory, like deployment.images.dir above)
 
 # -----------------------------------------------------------------------------
 # SNAPPI TESTBED  (read by every run EXCEPT --deploy-only)

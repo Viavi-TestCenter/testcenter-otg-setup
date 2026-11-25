@@ -358,7 +358,15 @@ sonic-mgmt source, cleanup policy) and, for a full run,
 ends with a `SNAPPI TEST SUMMARY` block and `RESULT: PASS` (or `FAIL`) — see
 [§11](#11-logs-and-reports) for what else is written to disk.
 
-- **`allure.enabled` is `false` by default** (the previous shipped file had it `true`).
+- **Typos are reported, not silently ignored.** A key the tool does not know under a
+  known section (for example `docker_compose: {enable: false}`) is logged as
+  `unknown key ... - ignored (did you mean 'enabled'?)` and falls back to its default, so
+  read the warnings of a first run; `--validate` shows them too.
+- **A loopback address of an existing Labserver or OTG service is resolved.** Written as
+  `127.0.0.1` / `localhost` in `testbed.endpoints` (or as `host_ip`), it is replaced by this
+  host's address, because the sonic-mgmt container and `otgctl` cannot reach this host
+  through loopback.
+- **`deployment.allure.enabled` is `false` by default** (the previous shipped file had it `true`).
   The default virtual lab neither deploys the report server nor publishes results to it
   (the Allure arguments are passed to `pytest` only when it is enabled). Set
   `deployment.allure.enabled: true` (and keep `testbed.reporting.allure_project_id`) to
@@ -379,9 +387,11 @@ ends with a `SNAPPI TEST SUMMARY` block and `RESULT: PASS` (or `FAIL`) — see
   `images:`, `testcenter:`, `dut:`, `otg:`, `sonic_mgmt:`, `cleanup:`, `logging:`,
   `allure:` or `topology:`, or `deployment.mode` / `deployment.labserver` / ...) is
   migrated in memory to the `deployment:` / `testbed:` layout and a deprecation warning
-  is logged on every run; the file on disk is not changed. `--show-config` shows where
-  each migrated value landed (it prints the resolved configuration, not a YAML file to
-  paste: rewrite the file with the key map in [§6](#migrating-a-legacy-configyaml)).
+  is logged on every run; the file on disk is not changed. `--show-config` prints the
+  resolved configuration (each address with the section that owns it) and, for a legacy
+  file, the migrated `deployment:` / `testbed:` YAML to copy into `config.yaml` (passwords
+  are masked as `********`: copy the real values from your old file; the key map in
+  [§6](#migrating-a-legacy-configyaml) explains each move).
   One behaviour differs after migration: `testbed.deploy_minigraph` is `auto`, so a legacy
   *physical* lab no longer gets a minigraph pushed automatically (set
   `testbed.deploy_minigraph: true` to keep the old behaviour; it overwrites the DUT's
@@ -1113,7 +1123,7 @@ file is legacy when it has a top-level `images`, `testcenter`, `dut`, `otg`, `so
 `.otg_service` / `.stc_chassis` / `.docker_compose` key, or a `testbed.conf_name` / `.inv_name` /
 `.dut_group_name` / `.server_group` key. It is mapped in memory to the new layout and a
 deprecation warning is logged on every run (the file on disk is never rewritten; `--show-config`
-prints the resolved values so you can see where each landed). A file that mixes legacy keys with
+also prints the migrated layout, passwords masked, so you can copy it). A file that mixes legacy keys with
 the new `deployment.target` is rejected with a message naming the offending keys. Other warnings:
 `dut.links[].host_interface` is dropped; `deployment.otg_service.port` other than 50051 for a
 tool-deployed service is ignored; an `otg.rest_port` that differs from the service port is
