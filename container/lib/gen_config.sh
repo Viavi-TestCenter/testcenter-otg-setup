@@ -5,23 +5,11 @@
 # shared with the rest of the sonic-mgmt repo (testbed.yaml, the inv_name.yml
 # group_vars file) are patched in place, leaving unrelated content untouched.
 
-phase_generate_ansible_config() {
-    log_step "Generating ansible/testbed/topology configuration"
-
-    local ansible_dir="$SONIC_MGMT_DIR/ansible"
-    [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
-
-    _gen_testbed_config "$ansible_dir"
-    _gen_password_file "$ansible_dir"
-    _gen_clab_topology
-
-    log_ok "Ansible/testbed/topology configuration generated"
-}
-
 # README §4.1-4.7 (excludes §4.8's STC/OTG compatibility patch): the
 # ansible-side files describing the DUT/chassis/OTG device inventory,
-# cabling, and lab addressing. Shared by phase_generate_ansible_config
-# (full pipeline) and phase_gen_config (--gen-config, standalone below).
+# cabling, and lab addressing. Written by phase_gen_config (stage 3), which
+# every test stage runs just before it needs them - the deploy stage
+# (--deploy-only) writes none of them.
 _gen_testbed_config() {
     local ansible_dir="$1"
     _gen_devices_csv "$ansible_dir"
@@ -33,9 +21,13 @@ _gen_testbed_config() {
     _gen_topo_yml "$ansible_dir"
 }
 
-# --gen-config: only the README §4.1-4.7 testbed files above - not the
-# password file or containerlab topology (§3-scoped, not part of §4), and
-# not §4.8's patch (applied separately via phase_sonic_mgmt_source).
+# Stage 3 (--gen-config, and the second half of every test stage): the
+# README §4.1-4.7 testbed files above plus the ansible password file, then the
+# inventory check (the ansible-inventory graph lists the DUT host) - the one
+# part of the old verify step that needs the generated files. Not §4.8's patch
+# (applied by phase_sonic_mgmt_source) and not the containerlab topology (part
+# of the deploy stage). Contacts no external component. Generated files are
+# overwritten on every run; do not hand-edit them.
 phase_gen_config() {
     log_step "Generating testbed configuration (README §4.1-4.7, excl. §4.8 patch)"
 
@@ -43,6 +35,14 @@ phase_gen_config() {
     [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
 
     _gen_testbed_config "$ansible_dir"
+    _gen_password_file "$ansible_dir"
+
+    # ansible-inventory runs inside the sonic-mgmt container.
+    if docker ps --format '{{.Names}}' | grep -qx "$SONIC_MGMT_CONTAINER"; then
+        _verify_inventory
+    else
+        log_warn "sonic-mgmt container '$SONIC_MGMT_CONTAINER' is not running - skipping the inventory check (it runs inside the container). Run --deploy-only, then --gen-config again to check it."
+    fi
 
     log_ok "Testbed configuration generated under $ansible_dir"
 }
@@ -203,13 +203,15 @@ _gen_password_file() {
     chmod 600 "$f"
 }
 
+# Part of the deploy stage (called by _phase_deploy_services_impl): it is only
+# needed to deploy a virtual lab, and needs nothing from testbed:.
 _gen_clab_topology() {
-    mkdir -p "$WORK_DIR"
     if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+        mkdir -p "$WORK_DIR"
         _gen_clab_topology_virtual
-        log_info "wrote $CLAB_TOPO_FILE (testcenter.mode=virtual)"
+        log_info "wrote $CLAB_TOPO_FILE (deployment.target=virtual, ${CFG_CLAB_LINK_COUNT} veth link(s) to the chassis)"
     else
-        log_info "testcenter.mode=physical - STC chassis and DUT are external hardware, no containerlab topology needed"
+        log_info "deployment.target=physical - STC chassis and DUT are external hardware, no containerlab topology needed"
     fi
 }
 
@@ -242,16 +244,23 @@ _gen_clab_topology_virtual() {
         echo "        HWSKU: ${CFG_DUT_HWSKU}"
         echo ""
         echo "  links:"
-        local i
-        for (( i=0; i<CFG_DUT_LINKS_COUNT; i++ )); do
-            sp_var="CFG_DUT_LINK_${i}_STC_PORT"; dp_var="CFG_DUT_LINK_${i}_DUT_PORT"
-            local eth=$((i + 1))
+        # One veth pair per link. The count is deployment.dut_vs.link_count, else the
+        # length of testbed.dut.links, else 2 (resolved by the loader), so a deploy-only
+        # run with no testbed: section still gets its links. The STC/DUT port names are
+        # kept as comments only when the cabling is known.
+        local i eth sp_note dp_note sp_var dp_var
+        for (( i=0; i<CFG_CLAB_LINK_COUNT; i++ )); do
+            eth=$((i + 1)); sp_note=""; dp_note=""
+            if (( i < ${CFG_DUT_LINKS_COUNT:-0} )); then
+                sp_var="CFG_DUT_LINK_${i}_STC_PORT"; dp_var="CFG_DUT_LINK_${i}_DUT_PORT"
+                sp_note="           # ${!sp_var}"; dp_note="           # ${!dp_var}"
+            fi
             echo "    - type: veth"
             echo "      endpoints:"
             echo "        - node: snappi-sonic-stc"
-            echo "          interface: eth${eth}           # ${!sp_var}"
+            echo "          interface: eth${eth}${sp_note}"
             echo "        - node: ${CFG_DUT_HOSTNAME}"
-            echo "          interface: eth${eth}           # ${!dp_var}"
+            echo "          interface: eth${eth}${dp_note}"
             printf '          mac: 02:00:00:00:01:%02x\n' "$((i + 1))"
         done
     } > "$CLAB_TOPO_FILE"

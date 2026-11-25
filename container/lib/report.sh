@@ -20,28 +20,45 @@ print_run_config() {
     row "Run mode" "$MODE"
     row "Config file" "$CONFIG_FILE"
     echo "--- Traffic generator (TestCenter) ---------------------------"
-    row "TestCenter version" "$CFG_TC_VERSION"
-    row "Labserver version" "$CFG_TC_LABSERVER_VERSION (derived from testcenter.version)"
-    row "OTG service version" "${CFG_TC_OTGSERVICE_VERSION}.* (major.minor match against testcenter.version)"
+    if [[ -n "$CFG_TC_VERSION" ]]; then
+        row "TestCenter version" "$CFG_TC_VERSION"
+        row "Labserver version" "$CFG_TC_LABSERVER_VERSION (derived from deployment.stc.version)"
+        row "OTG service version" "${CFG_TC_OTGSERVICE_VERSION}.* (major.minor match against deployment.stc.version)"
+    else
+        row "TestCenter version" "not set (nothing this tool deploys is chosen by version)"
+    fi
 
+    # Each component's address and the section that owns it: a component this tool
+    # deploys has its address in deployment:, an external one (physical, provisioned)
+    # in testbed:. "owner" makes a mis-placed value (the usual virtual <-> physical
+    # switching mistake) visible without running anything.
     echo "--- Deployment topology ---------------------------------------"
-    row "Labserver deployment mode" "$CFG_DEPLOY_MODE"
-    row "OTG service deployment mode" "$CFG_DEPLOY_MODE"
-    if [[ "$CFG_DEPLOY_MODE" == "docker-compose" ]]; then
+    row "Target" "$CFG_TARGET"
+    row "Labserver deployment mode" "$CFG_LABSERVER_MODE"
+    row "OTG service deployment mode" "$CFG_OTG_MODE"
+    if [[ "$CFG_LABSERVER_MODE" == "docker-compose" && "$CFG_OTG_MODE" == "docker-compose" ]]; then
         row "  Compose stack" "otg-compose.yaml (project=$COMPOSE_PROJECT, source=$OTG_SOURCE_DIR)"
     fi
+    row "Labserver address" "${CFG_LABSERVER_IP:-n/a} (owner: ${CFG_LABSERVER_OWNER}:)"
+    row "OTG service address" "${CFG_OTG_SERVICE_IP:-n/a}:${CFG_OTG_SERVICE_PORT} (owner: ${CFG_OTG_SERVICE_OWNER}:)"
     if [[ "$CFG_TC_MODE" == "virtual" ]]; then
-        row "STC chassis" "Docker container via containerlab (mgmt ${CFG_STC_CHASSIS_IP})"
+        row "STC chassis" "Docker container via containerlab - ${CFG_STC_CHASSIS_IP:-n/a} (owner: ${CFG_STC_CHASSIS_OWNER}:)"
     else
-        row "STC chassis" "Physical hardware (mgmt ${CFG_STC_CHASSIS_IP})"
+        row "STC chassis" "Physical hardware - ${CFG_STC_CHASSIS_IP:-n/a} (owner: ${CFG_STC_CHASSIS_OWNER}:)"
     fi
     if [[ "$CFG_DUT_MODE" == "virtual" ]]; then
-        row "SONiC DUT" "Virtual (sonic-vs) - Docker container via containerlab"
+        row "SONiC DUT" "Virtual (sonic-vs) - Docker container via containerlab - ${CFG_DUT_MGMT_IP:-n/a} (owner: ${CFG_DUT_OWNER}:)"
         row "  DUT image" "$CFG_DUT_IMAGE"
+        row "  Veth links to the chassis" "$CFG_CLAB_LINK_COUNT"
     else
-        row "SONiC DUT" "Physical hardware"
+        row "SONiC DUT" "Physical hardware - ${CFG_DUT_MGMT_IP:-n/a} (owner: ${CFG_DUT_OWNER}:)"
     fi
-    row "  DUT hostname / hwsku" "$CFG_DUT_HOSTNAME / $CFG_DUT_HWSKU"
+    row "  DUT hostname / hwsku" "${CFG_DUT_HOSTNAME:-n/a} / ${CFG_DUT_HWSKU:-n/a}"
+    case "$CFG_DEPLOY_MINIGRAPH" in
+        auto)  row "Minigraph push (deploy-mg)" "auto -> $([[ "$CFG_DEPLOY_MINIGRAPH_EFFECTIVE" == "1" ]] && echo "pushed automatically (virtual)" || echo "never automatic (physical); --deploy-mg pushes explicitly")" ;;
+        true)  row "Minigraph push (deploy-mg)" "true -> pushed automatically$([[ "$CFG_TARGET" == "physical" ]] && echo " - OVERWRITES the physical DUT's running config")" ;;
+        *)     row "Minigraph push (deploy-mg)" "false -> never automatic; --deploy-mg pushes explicitly" ;;
+    esac
 
     echo "--- sonic-mgmt source -------------------------------------------"
     row "Repository / branch" "$CFG_SONIC_MGMT_REPO ($CFG_SONIC_MGMT_BRANCH)"
@@ -76,7 +93,7 @@ print_run_config() {
         row "Cleanup ENV on failure" "False (kept for debugging)"
     fi
     if [[ "$CFG_REPLACE_ENV_ON_VERSION_CHANGE" == "1" ]]; then
-        row "Replace ENV on version change" "True (tool-owned environment auto torn down/redeployed on a testcenter.version change)"
+        row "Replace ENV on version change" "True (tool-owned environment auto torn down/redeployed on a deployment.stc.version change)"
     else
         row "Replace ENV on version change" "False (old environment kept; per-resource reuse checks decide)"
     fi
@@ -105,7 +122,7 @@ phase_report() {
     # to deriving it from config here so the summary still shows the link.
     if [[ "${CFG_ALLURE_ENABLED:-0}" == "1" && -z "${ALLURE_URL:-}" ]]; then
         local allure_host="${CFG_ALLURE_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
-        ALLURE_URL="http://${allure_host}:${CFG_ALLURE_API_PORT}/allure-docker-service/projects/${CFG_ALLURE_PROJECT_ID}/reports/latest/index.html"
+        ALLURE_URL="http://${allure_host}:${CFG_ALLURE_API_PORT}/allure-docker-service/projects/${CFG_ALLURE_PROJECT_ID:-snappi-smoke}/reports/latest/index.html"
     fi
     if [[ "${CFG_ALLURE_ENABLED:-0}" == "1" && -n "${ALLURE_URL:-}" ]]; then
         echo "Allure : $ALLURE_URL"

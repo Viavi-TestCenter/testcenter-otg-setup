@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # versions.sh — --list-versions: reports which TestCenter (STC) versions are
 # currently deliverable/testable, by inspecting both the artifact files
-# cached under images.dir AND whatever is already loaded into 'docker images'
+# cached under deployment.images.dir AND whatever is already loaded into 'docker images'
 # (an stc:<version> or *labserver*:<version> tag needs no artifact file at
 # all - same reuse rule phase_check_artifacts/deploy.sh apply). Read-only,
 # like --show-config: no lock, no log dir, no phases run, nothing
@@ -12,11 +12,11 @@
 # stc:<version> docker image) and its labserver (labserver-<version>.tar.xz,
 # or an already-imported *labserver*:<version> docker image) are present.
 # OTG service installers only need to match a version's leading major.minor
-# (otgservice.<major.minor>.*.sh) - see config.yaml's testcenter.version
+# (otgservice.<major.minor>.*.sh) - see config.yaml's deployment.stc.version
 # comment and config_loader.py's derivation of CFG_TC_OTGSERVICE_VERSION.
 phase_list_versions() {
     log_step "Scanning $IMAGES_DIR for deliverable/testable TestCenter (STC) versions"
-    [[ -d "$IMAGES_DIR" ]] || die "Images directory does not exist: $IMAGES_DIR (see images.dir in config.yaml)"
+    [[ -d "$IMAGES_DIR" ]] || die "Images directory does not exist: $IMAGES_DIR (see deployment.images.dir in config.yaml)"
 
     local -A stc_file labserver_file otg_files
     local f base ver v
@@ -81,16 +81,22 @@ phase_list_versions() {
         done
     fi
     echo "======================================================================================"
-    row "Currently configured (testcenter.version)" "$CFG_TC_VERSION"
-    if [[ -n "${stc_file[$CFG_TC_VERSION]:-}" && -n "${labserver_file[$CFG_TC_VERSION]:-}" ]]; then
-        row "  Status" "READY - STC (${stc_file[$CFG_TC_VERSION]}) and labserver (${labserver_file[$CFG_TC_VERSION]}) both present"
+    if [[ -z "$CFG_TC_VERSION" ]]; then
+        # e.g. physical chassis with a provisioned Labserver and OTG service: nothing this
+        # tool deploys is chosen by version, so deployment.stc.version is not set.
+        row "Currently configured (deployment.stc.version)" "not set (nothing this tool deploys is chosen by version)"
     else
-        row "  Status" "NOT READY - missing $( [[ -z "${stc_file[$CFG_TC_VERSION]:-}" ]] && echo -n "STC artifact "; [[ -z "${labserver_file[$CFG_TC_VERSION]:-}" ]] && echo -n "labserver artifact")"
-    fi
-    if [[ -z "${otg_files[$CFG_TC_OTGSERVICE_VERSION]:-}" ]]; then
-        row "  OTG service" "no otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh under $IMAGES_DIR (only required if the OTG service isn't already reachable/running)"
-    else
-        row "  OTG service" "${otg_files[$CFG_TC_OTGSERVICE_VERSION]}"
+        row "Currently configured (deployment.stc.version)" "$CFG_TC_VERSION"
+        if [[ -n "${stc_file[$CFG_TC_VERSION]:-}" && -n "${labserver_file[$CFG_TC_VERSION]:-}" ]]; then
+            row "  Status" "READY - STC (${stc_file[$CFG_TC_VERSION]}) and labserver (${labserver_file[$CFG_TC_VERSION]}) both present"
+        else
+            row "  Status" "NOT READY - missing $( [[ -z "${stc_file[$CFG_TC_VERSION]:-}" ]] && echo -n "STC artifact "; [[ -z "${labserver_file[$CFG_TC_VERSION]:-}" ]] && echo -n "labserver artifact")"
+        fi
+        if [[ -z "${otg_files[$CFG_TC_OTGSERVICE_VERSION]:-}" ]]; then
+            row "  OTG service" "no otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh under $IMAGES_DIR (only required if the OTG service isn't already reachable/running)"
+        else
+            row "  OTG service" "${otg_files[$CFG_TC_OTGSERVICE_VERSION]}"
+        fi
     fi
 
     # Final rollup: every version with both STC and labserver available right

@@ -160,6 +160,22 @@ wait_for_tcp() {
     done
 }
 
+# tcp_any_open <host> <timeout-seconds> <port>...  - true as soon as ANY of the
+# ports accepts a TCP connection (retried until the timeout). Used for a physical
+# STC chassis, whose management ports vary with its software and firewall.
+tcp_any_open() {
+    local host="$1" timeout="$2"; shift 2
+    local waited=0 p
+    while true; do
+        for p in "$@"; do
+            timeout 3 bash -c "exec 3<>\"/dev/tcp/${host}/${p}\"" 2>/dev/null && return 0
+        done
+        waited=$((waited + 3))
+        (( waited >= timeout )) && return 1
+        sleep 2
+    done
+}
+
 http_code() {
     curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || echo "000"
 }

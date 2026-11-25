@@ -9,7 +9,7 @@
 # --destroy or cleanup_env_on_failure below.
 #
 # cleanup_env_on_failure auto-tears-down tool-owned environment resources
-# after a FAILED run, controlled by cleanup.env_on_failure in config.yaml
+# after a FAILED run, controlled by deployment.cleanup.env_on_failure in config.yaml
 # (default: true). It uses the exact same scope as --destroy (phase_destroy)
 # - only resources this tool created are ever removed. A successful run
 # never calls this - the environment is always left deployed for reuse.
@@ -60,10 +60,10 @@ cleanup_env_on_failure() {
         return
     fi
     if [[ "$CFG_CLEANUP_ENV_ON_FAILURE" != "1" ]]; then
-        record_phase "Environment cleanup" "SKIPPED" "cleanup.env_on_failure=false - environment kept for debugging"
+        record_phase "Environment cleanup" "SKIPPED" "deployment.cleanup.env_on_failure=false - environment kept for debugging"
         return
     fi
-    log_step "Run failed - tearing down tool-owned environment (cleanup.env_on_failure=true)"
+    log_step "Run failed - tearing down tool-owned environment (deployment.cleanup.env_on_failure=true)"
     if phase_destroy; then
         record_phase "Environment cleanup" "OK"
     else

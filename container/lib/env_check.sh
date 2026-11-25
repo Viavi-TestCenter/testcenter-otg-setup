@@ -113,7 +113,7 @@ _ensure_python_deps() {
 # shell, not a subshell - is the one that calls die().
 phase_check_artifacts() {
     log_step "Validating VIAVI artifacts in $IMAGES_DIR"
-    [[ -d "$IMAGES_DIR" ]] || die "Images directory does not exist: $IMAGES_DIR (see images.dir in config.yaml)"
+    [[ -d "$IMAGES_DIR" ]] || die "Images directory does not exist: $IMAGES_DIR (see deployment.images.dir in config.yaml)"
     local rc
 
     # --- STC: containerlab always needs image tag stc:<version> locally ---
@@ -121,7 +121,7 @@ phase_check_artifacts() {
     # or as a zip distribution (Spirent_TestCenter_Docker_<version>.zip) that
     # contains that same tgz - the zip is only unpacked when no plain tgz is
     # found, so an already-extracted tgz is always reused as-is.
-    # Only relevant when testcenter.mode=virtual - a physical chassis has no
+    # Only relevant when deployment.target=virtual - a physical chassis has no
     # docker image to validate at all.
     STC_IMAGE_FILE=""
     if [[ "$CFG_TC_MODE" == "virtual" ]]; then
@@ -142,7 +142,7 @@ phase_check_artifacts() {
             fi
         fi
     else
-        log_ok "testcenter.mode=physical - STC chassis is external hardware, no docker image required"
+        log_ok "deployment.target=physical - STC chassis is external hardware, no docker image required"
     fi
 
     # --- Labserver: reuse if a container/image already exists, else require file ---
@@ -154,7 +154,10 @@ phase_check_artifacts() {
     # when NO matching image exists under any tag does the artifact file
     # actually get required here.
     LABSERVER_IMAGE_FILE=""
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx labserver; then
+    if [[ "$CFG_LABSERVER_MODE" == "provisioned" ]]; then
+        # An existing Labserver is never deployed by this tool, so no image/artifact is needed.
+        log_ok "Labserver is provisioned (testbed.endpoints.labserver_ip) - no Labserver image required"
+    elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx labserver; then
         log_ok "labserver container already exists - artifact file not required"
     elif docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qi "labserver.*${CFG_TC_LABSERVER_VERSION}"; then
         log_ok "labserver image matching ${CFG_TC_LABSERVER_VERSION} already present in 'docker images' - artifact file not required"
@@ -172,23 +175,25 @@ phase_check_artifacts() {
     # stricter check then found no tool-owned stack and tried to redeploy
     # with no installer file resolved.
     OTGSERVICE_FILE=""
-    if [[ "$CFG_DEPLOY_MODE" == "standalone" ]]; then
+    if [[ "$CFG_OTG_MODE" == "provisioned" ]]; then
+        log_ok "OTG service is provisioned (testbed.endpoints.otg_service) - no installer artifact required"
+    elif [[ "$CFG_OTG_MODE" == "standalone" ]]; then
         if wait_for_tcp "$CFG_OTG_SERVICE_IP" "$CFG_OTG_SERVICE_PORT" 3; then
             log_ok "OTG service already reachable at ${CFG_OTG_SERVICE_IP}:${CFG_OTG_SERVICE_PORT} - installer artifact not required"
         else
             # OTG service versioning doesn't track STC's, so there's no
             # exact filename to try first here (unlike STC/Labserver) - only
             # the leading major.minor (CFG_TC_OTGSERVICE_VERSION, derived
-            # from testcenter.version) is required to match.
+            # from deployment.stc.version) is required to match.
             OTGSERVICE_FILE=$(_find_exact_artifact "" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"); rc=$?
-            _die_on_artifact_rc "$rc" "OTG service installer (otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh, matching testcenter.version ${CFG_TC_VERSION})" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"
+            _die_on_artifact_rc "$rc" "OTG service installer (otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh, matching deployment.stc.version ${CFG_TC_VERSION})" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"
         fi
-    elif [[ "$CFG_DEPLOY_MODE" == "docker-compose" ]]; then
+    elif [[ "$CFG_OTG_MODE" == "docker-compose" ]]; then
         if docker_compose_stack_up; then
             log_ok "docker-compose labserver+OTG stack already running (project=$COMPOSE_PROJECT) - installer artifact not required"
         else
             OTGSERVICE_FILE=$(_find_exact_artifact "" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"); rc=$?
-            _die_on_artifact_rc "$rc" "OTG service installer (otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh, matching testcenter.version ${CFG_TC_VERSION})" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"
+            _die_on_artifact_rc "$rc" "OTG service installer (otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh, matching deployment.stc.version ${CFG_TC_VERSION})" "otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh"
         fi
     fi
 
@@ -199,16 +204,16 @@ phase_check_artifacts() {
             log_ok "sonic-vs image ${CFG_DUT_IMAGE} already present in 'docker images' - artifact file not required"
         elif [[ -n "$CFG_DUT_IMAGE_ARCHIVE" ]]; then
             SONIC_VS_ARCHIVE="$(resolve_path "$CFG_DUT_IMAGE_ARCHIVE")"
-            [[ -f "$SONIC_VS_ARCHIVE" ]] || die "dut.image_archive does not exist: $SONIC_VS_ARCHIVE"
+            [[ -f "$SONIC_VS_ARCHIVE" ]] || die "deployment.dut_vs.image_archive does not exist: $SONIC_VS_ARCHIVE"
         else
             SONIC_VS_ARCHIVE=$(_find_exact_artifact "" "sonic-vs-*.tar.gz sonic-vs-*.gz" true); rc=$?
             if [[ $rc -ne 0 ]]; then
                 if [[ "$CFG_DUT_BUILD_SONIC_VS" == "1" && "$CFG_DUT_IMAGE" == vrnetlab/sonic_sonic-vs:* ]]; then
                     _build_sonic_vs_image
                 elif [[ "$CFG_DUT_BUILD_SONIC_VS" == "1" ]]; then
-                    die "Configured image ${CFG_DUT_IMAGE} is not available locally, and dut.build_sonic_vs only supports building vrnetlab/sonic_sonic-vs:<tag> images. Set dut.image to vrnetlab/sonic_sonic-vs:<tag> to use the automatic build, or place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive)."
+                    die "Configured image ${CFG_DUT_IMAGE} is not available locally, and deployment.dut_vs.build_sonic_vs only supports building vrnetlab/sonic_sonic-vs:<tag> images. Set deployment.dut_vs.image to vrnetlab/sonic_sonic-vs:<tag> to use the automatic build, or place/tag ${CFG_DUT_IMAGE} manually (or via deployment.dut_vs.image_archive)."
                 else
-                    die "sonic-vs image ${CFG_DUT_IMAGE} is not in 'docker images' and no sonic-vs-*.tar.gz archive was found under $IMAGES_DIR. Set dut.image_archive in config.yaml, place a matching archive under images.dir, set dut.build_sonic_vs: true, or load/tag the image manually."
+                    die "sonic-vs image ${CFG_DUT_IMAGE} is not in 'docker images' and no sonic-vs-*.tar.gz archive was found under $IMAGES_DIR. Set deployment.dut_vs.image_archive in config.yaml, place a matching archive under deployment.images.dir, set deployment.dut_vs.build_sonic_vs: true, or load/tag the image manually."
                 fi
             fi
         fi
@@ -229,7 +234,7 @@ phase_check_artifacts() {
 # actually publishes a sonic-vs.img.gz build for (master and recent releases;
 # see the die message below if a given tag has none).
 _build_sonic_vs_image() {
-    log_step "dut.image (${CFG_DUT_IMAGE}) not found locally - building it per guide §3.3 (dut.build_sonic_vs=true)"
+    log_step "deployment.dut_vs.image (${CFG_DUT_IMAGE}) not found locally - building it per guide §3.3 (deployment.dut_vs.build_sonic_vs=true)"
     local log="$LOG_DIR/sonic_vs_build.log"
     run_phase_with_spinner "Building sonic-vs image" "$log" _build_sonic_vs_image_impl \
         || die "Building ${CFG_DUT_IMAGE} failed - see $log"
@@ -245,11 +250,11 @@ _build_sonic_vs_image_impl() {
     [[ -d "$sonic_dir" ]] || die "vrnetlab checkout at $vrnetlab_dir has no 'sonic' subdirectory - the upstream repository layout may have changed (expected https://github.com/srl-labs/vrnetlab/tree/master/sonic)."
 
     if [[ -f "$sonic_dir/sonic-vs-$tag.qcow2" ]]; then
-        # dut.keep_dut_artifacts=true kept this from a previous build - reuse
+        # deployment.dut_vs.keep_dut_artifacts=true kept this from a previous build - reuse
         # it instead of re-downloading ~1GB. A qcow2 only ever exists here
         # once gunzip+mv below have both fully succeeded, so its presence is
         # itself proof it isn't a stray/incomplete leftover.
-        log_info "Reusing previously extracted $sonic_dir/sonic-vs-$tag.qcow2 (dut.keep_dut_artifacts=true) - skipping download"
+        log_info "Reusing previously extracted $sonic_dir/sonic-vs-$tag.qcow2 (deployment.dut_vs.keep_dut_artifacts=true) - skipping download"
     else
         # vrnetlab's Makefile builds every *.qcow2 it finds in this directory, so
         # a stray file left over from an earlier interrupted attempt must not
@@ -270,12 +275,12 @@ _build_sonic_vs_image_impl() {
         || die "'make' completed but ${CFG_DUT_IMAGE} still isn't in 'docker images' - the vrnetlab sonic/Makefile layout may have changed upstream, or its derived tag doesn't match '$tag'."
 
     # Tracks that THIS tool actually built the image, so --destroy only ever
-    # considers removing it when dut.keep_dut_image=false (never a
+    # considers removing it when deployment.dut_vs.keep_dut_image=false (never a
     # manually-provided/pulled image it didn't create) - see phase_destroy.
     state_set "$STATE_FILE" OWN_DUT_IMAGE 1
 }
 
-# Downloads sonic-vs.img.gz for $tag into $dest_file, per dut.download_source
+# Downloads sonic-vs.img.gz for $tag into $dest_file, per deployment.dut_vs.download_source
 # (CFG_DUT_DOWNLOAD_SOURCE). Only ever called once _build_sonic_vs_image_impl
 # has already established the image isn't present locally and no cached
 # qcow2/archive covers it - branch/tag lookups never run before that.
@@ -284,22 +289,22 @@ _fetch_sonic_vs_img_gz() {
     case "$CFG_DUT_DOWNLOAD_SOURCE" in
         sonic.software)
             _download_sonic_vs_from_sonic_software "$tag" "$dest_file" \
-                || die "Download of sonic-vs.img.gz for tag '$tag' from sonic.software failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+                || die "Download of sonic-vs.img.gz for tag '$tag' from sonic.software failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via deployment.dut_vs.image_archive) instead."
             ;;
         azure)
             _download_sonic_vs_from_azure "$tag" "$dest_file" \
-                || die "Download of sonic-vs.img.gz for tag '$tag' from Azure Pipelines failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+                || die "Download of sonic-vs.img.gz for tag '$tag' from Azure Pipelines failed - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via deployment.dut_vs.image_archive) instead."
             ;;
         auto)
             if _download_sonic_vs_from_azure "$tag" "$dest_file"; then
                 return 0
             fi
-            log_info "Azure download failed for tag '$tag' - falling back to sonic.software (dut.download_source=auto)"
+            log_info "Azure download failed for tag '$tag' - falling back to sonic.software (deployment.dut_vs.download_source=auto)"
             _download_sonic_vs_from_sonic_software "$tag" "$dest_file" \
-                || die "Download of sonic-vs.img.gz for tag '$tag' failed from both Azure Pipelines and sonic.software - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via dut.image_archive) instead."
+                || die "Download of sonic-vs.img.gz for tag '$tag' failed from both Azure Pipelines and sonic.software - see log above. Place/tag ${CFG_DUT_IMAGE} manually (or via deployment.dut_vs.image_archive) instead."
             ;;
         *)
-            die "Unknown dut.download_source '${CFG_DUT_DOWNLOAD_SOURCE}' - must be 'auto', 'azure', or 'sonic.software'."
+            die "Unknown deployment.dut_vs.download_source '${CFG_DUT_DOWNLOAD_SOURCE}' - must be 'auto', 'azure', or 'sonic.software'."
             ;;
     esac
 }
@@ -426,7 +431,7 @@ _ensure_vrnetlab_repo() {
     fi
 
     # Tracks that THIS tool actually created this checkout, so --destroy only
-    # ever considers removing it when dut.keep_dut_artifacts=false - see
+    # ever considers removing it when deployment.dut_vs.keep_dut_artifacts=false - see
     # phase_destroy.
     state_set "$STATE_FILE" OWN_DUT_ARTIFACTS 1
 }

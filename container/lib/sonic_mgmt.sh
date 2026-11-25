@@ -8,12 +8,12 @@ phase_sonic_mgmt_source() {
     log_step "Preparing sonic-mgmt source"
 
     if [[ "$SONIC_MGMT_USER_PROVIDED" -eq 1 ]]; then
-        [[ -d "$SONIC_MGMT_DIR/.git" ]] || die "sonic_mgmt.source_dir does not look like a git checkout: $SONIC_MGMT_DIR"
+        [[ -d "$SONIC_MGMT_DIR/.git" ]] || die "deployment.sonic_mgmt.source_dir does not look like a git checkout: $SONIC_MGMT_DIR"
         log_info "Using existing sonic-mgmt checkout: $SONIC_MGMT_DIR (not cloned by this tool)"
 
         if [[ -n "$(git -C "$SONIC_MGMT_DIR" status --porcelain 2>/dev/null)" ]]; then
             log_warn "sonic-mgmt checkout has a dirty working tree - leaving it untouched (no checkout, no patch apply)."
-            log_warn "If you need the baseline commit or the STC/OTG patch applied, manage it yourself or point sonic_mgmt.source_dir at a clean checkout."
+            log_warn "If you need the baseline commit or the STC/OTG patch applied, manage it yourself or point deployment.sonic_mgmt.source_dir at a clean checkout."
             SONIC_MGMT_PATCH_APPLIED="skipped (dirty tree)"
             return
         fi
@@ -21,7 +21,7 @@ phase_sonic_mgmt_source() {
         if [[ "$CFG_SONIC_MGMT_PATCH_APPLY" == "1" ]]; then
             _sonic_mgmt_apply_patch_if_needed
         else
-            log_info "sonic_mgmt.patch.apply is false - leaving the existing checkout's patch state as-is."
+            log_info "deployment.sonic_mgmt.patch.apply is false - leaving the existing checkout's patch state as-is."
             SONIC_MGMT_PATCH_APPLIED="skipped (apply=false)"
         fi
         _sonic_mgmt_overwrite_custom_tests_if_needed
@@ -68,14 +68,14 @@ phase_sonic_mgmt_source() {
     if [[ "$CFG_SONIC_MGMT_PATCH_APPLY" == "1" ]]; then
         _sonic_mgmt_apply_patch_if_needed
     else
-        log_info "sonic_mgmt.patch.apply is false - skipping the STC/OTG compatibility patch."
+        log_info "deployment.sonic_mgmt.patch.apply is false - skipping the STC/OTG compatibility patch."
         SONIC_MGMT_PATCH_APPLIED="skipped (apply=false)"
     fi
     _sonic_mgmt_overwrite_custom_tests_if_needed
 }
 
 _sonic_mgmt_apply_patch_if_needed() {
-    [[ -f "$PATCH_FILE" ]] || die "Patch file not found: $PATCH_FILE (sonic_mgmt.patch.file in config.yaml)"
+    [[ -f "$PATCH_FILE" ]] || die "Patch file not found: $PATCH_FILE (deployment.sonic_mgmt.patch.file in config.yaml)"
 
     if git -C "$SONIC_MGMT_DIR" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
         log_ok "STC/OTG patch already applied to this checkout - skipping."
@@ -96,7 +96,7 @@ $out"
 }
 
 # Overwrites upstream snappi test files under $SONIC_MGMT_DIR/tests with
-# VIAVI-customized versions from sonic_mgmt.custom_tests.source_dir. Unlike
+# VIAVI-customized versions from deployment.sonic_mgmt.custom_tests.source_dir. Unlike
 # the STC/OTG patch above, this isn't a diff with an "already applied" state
 # to check - source_dir mirrors tests/ 1:1, so re-syncing it on every run is
 # cheap, idempotent, and guarantees the checkout never drifts from whatever
@@ -105,12 +105,12 @@ $out"
 # majority of the upstream suite) is left untouched.
 _sonic_mgmt_overwrite_custom_tests_if_needed() {
     if [[ "$CFG_SONIC_MGMT_CUSTOM_TESTS_OVERWRITE" != "1" ]]; then
-        log_info "sonic_mgmt.custom_tests.overwrite is false - leaving upstream snappi test scripts as-is."
+        log_info "deployment.sonic_mgmt.custom_tests.overwrite is false - leaving upstream snappi test scripts as-is."
         SONIC_MGMT_CUSTOM_TESTS_APPLIED="skipped (overwrite=false)"
         return
     fi
 
-    [[ -d "$CUSTOM_TESTS_DIR" ]] || die "Custom tests directory not found: $CUSTOM_TESTS_DIR (sonic_mgmt.custom_tests.source_dir in config.yaml)"
+    [[ -d "$CUSTOM_TESTS_DIR" ]] || die "Custom tests directory not found: $CUSTOM_TESTS_DIR (deployment.sonic_mgmt.custom_tests.source_dir in config.yaml)"
 
     local count; count=$(find "$CUSTOM_TESTS_DIR" -type f | wc -l)
     cp -R "$CUSTOM_TESTS_DIR/." "$SONIC_MGMT_DIR/tests/"
