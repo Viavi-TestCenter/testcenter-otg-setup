@@ -127,6 +127,23 @@ class LegacyAndLayout(unittest.TestCase):
         self.assertIn("must match", r.stderr)
 
 
+class ShippedConfig(unittest.TestCase):
+    SHIPPED = os.path.join(HERE, "..", "config.yaml")
+
+    def test_shipped_config_is_valid_for_every_scope(self):
+        for scope in ("deploy", "access", "full", "show"):
+            with self.subTest(scope=scope):
+                r = run(os.path.abspath(self.SHIPPED), scope)
+                self.assertEqual(r.rc, 0, r.stderr)
+
+    def test_shipped_config_describes_the_same_lab_as_the_old_shipped_one(self):
+        # The only intended difference: allure.enabled now defaults to false (it was true).
+        old, new = run("legacy_main.yaml").vars, run(os.path.abspath(self.SHIPPED)).vars
+        self.assertEqual(old.pop("CFG_ALLURE_ENABLED"), "1")
+        self.assertEqual(new.pop("CFG_ALLURE_ENABLED"), "0")
+        self.assertEqual(old, new)
+
+
 class Scopes(unittest.TestCase):
     def test_deploy_only_config_passes_deploy_scope_but_not_full(self):
         self.assertEqual(run("virtual_deploy_only.yaml", "deploy").rc, 0)
