@@ -1,0 +1,33 @@
+# Proposal example 1: physical DUT + chassis, Labserver and OTG service deployed together
+# (docker-compose) on this host. Minimal testbed: section (enough for --access-check).
+deployment:
+  target: physical
+  images:
+    dir: "./images"
+  stc:
+    version: "5.62.0766"
+    license_server: "@license-server.example.com"
+  otg_labserver:
+    docker_compose: { enabled: true, keep_build_image: true }
+  sonic_mgmt:
+    source_dir: ""
+    repo: "https://github.com/sonic-net/sonic-mgmt.git"
+    branch: "master"
+    baseline_commit: "91d8be388"
+    patch: { apply: true, file: "./snappi-stc-patch-v0.1.patch" }
+    custom_tests: { overwrite: true, source_dir: "../example/sonic_snappi/tests" }
+    keep_sonic_mgmt_src: true
+  allure:
+    enabled: false
+  cleanup:
+    env_on_failure: false
+    replace_on_version_change: true
+  logging:
+    dir: ""
+
+testbed:
+  endpoints:
+    stc_chassis_ip: "10.0.0.20"
+  dut:
+    mgmt_ip: "10.0.0.30"
+    credentials: { user: admin, password: admin }

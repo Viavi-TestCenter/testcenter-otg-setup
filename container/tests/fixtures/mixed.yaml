@@ -1,0 +1,11 @@
+# Legacy top-level keys mixed with a new-style deployment.target: must be rejected, naming the keys.
+images:
+  dir: "./images"
+dut:
+  mode: virtual
+deployment:
+  target: virtual
+  images:
+    dir: "./images"
+testbed:
+  dut: {}

@@ -1,0 +1,27 @@
+# Proposal example 3: Labserver and OTG service both exist (provisioned). No stc: block.
+deployment:
+  target: physical
+  images:
+    dir: "./images"
+  otg_labserver:
+    docker_compose: { enabled: false }
+    labserver:   { mode: provisioned }
+    otg_service: { mode: provisioned }
+  sonic_mgmt:
+    source_dir: ""
+    repo: "https://github.com/sonic-net/sonic-mgmt.git"
+    branch: "master"
+    baseline_commit: "91d8be388"
+    patch: { apply: true, file: "./snappi-stc-patch-v0.1.patch" }
+    custom_tests: { overwrite: true, source_dir: "../example/sonic_snappi/tests" }
+  allure:
+    enabled: false
+
+testbed:
+  endpoints:
+    stc_chassis_ip: "10.0.0.20"
+    labserver_ip:   "10.0.0.21"
+    otg_service: { ip: "10.0.0.22", port: 50051 }
+  dut:
+    mgmt_ip: "10.0.0.30"
+    credentials: { user: admin, password: admin }

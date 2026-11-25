@@ -1,0 +1,26 @@
+# Virtual lab, deploy only: no testbed: section at all (proposal §3, "Virtual lab, deploy only").
+deployment:
+  target: virtual
+  images:
+    dir: "./images"
+  otg_labserver:
+    docker_compose: { enabled: true, keep_build_image: true }
+  stc:
+    version: "5.62.0766"
+    license_server: "@license-server.example.com"
+    mgmt_ip: "192.168.1.2"
+  dut_vs:
+    image: "vrnetlab/sonic_sonic-vs:master"
+    hostname: "sonic-s6100-dut1"
+    mgmt_ip: "192.168.1.3"
+    hwsku: "Force10-S6000"
+    credentials: { user: admin, password: admin }
+  sonic_mgmt:
+    source_dir: ""
+    repo: "https://github.com/sonic-net/sonic-mgmt.git"
+    branch: "master"
+    baseline_commit: "91d8be388"
+    patch: { apply: true, file: "./snappi-stc-patch-v0.1.patch" }
+    custom_tests: { overwrite: true, source_dir: "../example/sonic_snappi/tests" }
+  allure:
+    enabled: false
