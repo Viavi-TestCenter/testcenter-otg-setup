@@ -80,7 +80,11 @@ _phase_deploy_services_impl() {
         log_info "deployment.target=physical - STC chassis and DUT are external hardware: no containerlab, and the DUT is not contacted by the deploy stage (--access-check installs the sonic-mgmt key)"
     fi
     _deploy_allure
-    [[ -n "${ALLURE_URL:-}" ]] && phase_export ALLURE_URL "$ALLURE_URL"
+    # An `[[ ... ]] && cmd` here would be the function's last command and make the
+    # whole phase "fail" (status 1) whenever Allure is off - which is the default.
+    if [[ -n "${ALLURE_URL:-}" ]]; then
+        phase_export ALLURE_URL "$ALLURE_URL"
+    fi
 }
 
 # ---------------------------------------------------------------- labserver -
