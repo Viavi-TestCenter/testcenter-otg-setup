@@ -183,8 +183,12 @@ by their environment, subject to their organization's security policies.
 **Software:** none of it needs to be pre-installed — phase 1
 (`phase_env_check`) installs whatever is missing: `git`, `sshpass`, `curl`,
 `jq`, `make`, Docker, Docker Compose, and [containerlab](https://containerlab.dev/),
-plus `python3` + `PyYAML`. Pass `--skip-env-check` to skip this phase if your
-host is already provisioned.
+plus `python3` + `PyYAML`. This runs before anything needs Docker, so a host with
+no Docker installed is fine. Pass `--skip-env-check` to skip this phase if your
+host is already provisioned; Docker must then already be installed and reachable,
+or the run stops with "docker is not installed" / "docker is unreachable".
+`--skip-env-check` only matters for `full` and `deploy-only`, the only modes that run
+phase 1.
 
 **Licensed VIAVI artifacts** — these are **not** public and are not part of
 the `sonic-mgmt` repository. Contact VIAVI support to obtain them, then drop
@@ -1207,6 +1211,13 @@ Docker, Docker Compose, containerlab, and `python3`+`PyYAML`. Every check is
 idempotent — nothing already meeting the minimum requirement is reinstalled.
 Skippable with `--skip-env-check`.
 
+Docker access is set up around this phase (`docker_bootstrap_sudo`, `lib/common.sh`):
+before it, a missing or unreachable Docker is not an error (`--soft`); right after it
+succeeds, the check runs again strictly, so a freshly installed Docker whose `docker`
+group membership is not active yet falls back to `sudo docker` for the rest of the run.
+With `--skip-env-check`, and in modes that never run this phase (`--test-only`,
+`--smoke-test`, ...), the check is strict from the start.
+
 ### 7.2 Artifact validation (`lib/env_check.sh::phase_check_artifacts`)
 For each VIAVI artifact (STC, Labserver, OTG service) and the `sonic-vs`
 image, checks — in order — whether it's already usable (image already in
@@ -1592,7 +1603,7 @@ and `summary.json` also carry the Allure report URL for that run.
 | `A container named 'labserver'/'otg' already exists but is not part of this tool's docker-compose stack` | `deployment.otg_labserver.docker_compose.enabled: true` (the default), but a same-named container already exists that does not belong to this tool's Compose project: left over from a standalone deployment, started manually, or a Labserver/OTG service that belongs to someone else. | This tool never removes it. Either remove it yourself (`docker rm -f labserver`/`otg`), or keep it and describe it as an existing component: `docker_compose.enabled: false`, `labserver.mode: provisioned` (and/or `otg_service.mode: provisioned`), with its address in `testbed.endpoints.labserver_ip` (and `testbed.endpoints.otg_service`). Then re-run. |
 | `otg-compose.yaml under ... does not define a 'labserver'/'otg' service` or `is missing expected file` | The `testcenter-otg-setup` checkout this container solution ships inside (one directory above `container/`) doesn't match the layout this integration expects (e.g. it's been edited or an upstream repo change altered it). | Restore that checkout to a known-good `testcenter-otg-setup` layout (matching guide §3.5). |
 | `Deploying/verifying lab services` spinner runs for minutes with no progress | Not caused by the docker-compose stack anymore — it no longer does any network git operation. Check `deploy_services.log` for what's actually running (e.g. `docker compose ... --build` pulling a base image / installing packages can take a while on a slow link — this is normal progress, not a hang, just not reflected in the spinner text). |
-| `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, or an artifact/image reported missing that's clearly in `docker images` | This shell's `docker` group membership isn't active (common right after the user was added to the group without a fresh login) — `docker_bootstrap_sudo` (`lib/common.sh`) detects this and falls back to `sudo docker` for the rest of the run, priming it once up front so later calls don't silently hang waiting on a password. If it still blocks, `sudo` itself is failing (misconfigured `sudoers`, or a password is required and nobody is watching the terminal). | Enter the `sudo` password when prompted at the start of the run, or avoid the prompt entirely by fixing the underlying group membership — see [§2](#2-prerequisites). |
+| `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, or an artifact/image reported missing that's clearly in `docker images` | This shell's `docker` group membership isn't active (common right after the user was added to the group without a fresh login) — `docker_bootstrap_sudo` (`lib/common.sh`) detects this and falls back to `sudo docker` for the rest of the run, priming it once up front (before phase 1 if Docker is already installed, otherwise right after phase 1 installs it) so later calls don't silently hang waiting on a password. If it still blocks, `sudo` itself is failing (misconfigured `sudoers`, or a password is required and nobody is watching the terminal). | Enter the `sudo` password when prompted at the start of the run, or avoid the prompt entirely by fixing the underlying group membership — see [§2](#2-prerequisites). |
 
 > **Note:** The latest available SONiC-VS build is used by default. In rare cases, a newly published image may contain issues that prevent successful deployment or SSH login. If you encounter errors such as:
 >

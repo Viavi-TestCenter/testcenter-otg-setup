@@ -186,6 +186,12 @@ mode_needs_docker() {
     [[ "$MODE" != "gen-config" ]]
 }
 
+# Will phase 1 (phase_env_check) run in this invocation? It is what installs docker, so the
+# docker bootstrap must not be fatal before it has had its chance.
+env_check_will_run() {
+    [[ ( "$MODE" == "full" || "$MODE" == "deploy-only" ) && "$SKIP_ENV_CHECK" -ne   1 ]]
+}
+
 # The post-deploy modes assume stage 1 already ran: the sonic-mgmt container
 # must be up and the source checkout present.
 require_deployed_environment() {
@@ -239,6 +245,8 @@ run_stages() {
             record_phase "Environment prep" "SKIPPED"
         elif phase_env_check; then
             record_phase "Environment prep" "OK"
+            # docker may have just been installed: set up the sudo fallback now (foreground).
+            docker_bootstrap_sudo
         else
             record_phase "Environment prep" "FAILED"; phase_report; exit 1
         fi
@@ -417,7 +425,11 @@ fi
 # Foreground and before anything backgrounds docker calls (run_phase_with_spinner) -
 # see docker_bootstrap_sudo in lib/common.sh.
 if mode_needs_docker; then
-    docker_bootstrap_sudo
+    if env_check_will_run; then
+        docker_bootstrap_sudo --soft   # phase 1 installs/starts docker; re-checked after it
+    else
+        docker_bootstrap_sudo
+    fi
 fi
 
 LOG_DIR="$LOG_BASE_DIR/$(date +%Y%m%d_%H%M%S)"

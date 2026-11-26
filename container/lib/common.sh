@@ -44,7 +44,10 @@ redact() {
 
 log_cmd() { log_info "\$ $(redact "$*")"; }
 
-require_cmd() { command -v "$1" >/dev/null 2>&1; }
+# type -P: real executables on PATH only. `command -v` also matches shell functions, and
+# this file defines a `docker` wrapper function below, so `command -v docker` would be true
+# on a host with no docker installed.
+require_cmd() { type -P "$1" >/dev/null 2>&1; }
 
 # $SUDO prefixes the few host-level commands that need root (apt/systemctl in the
 # env check, `mount --make-rshared /` on WSL in sonic_mgmt.sh) - never docker, see
@@ -83,12 +86,26 @@ docker() {
 # any phase that backgrounds docker calls via run_phase_with_spinner - a
 # sudo password prompt there would be hidden behind the spinner and look
 # like a hang.
+#
+# Usage: docker_bootstrap_sudo [--soft]
+#   (default) docker must be usable (directly or via sudo) or the run dies.
+#   --soft    used before phase 1 (phase_env_check), which installs/starts docker: a
+#             missing or unreachable docker is not an error yet, just return. Call it again
+#             without --soft after phase 1. Idempotent: a second call is a no-op once
+#             docker answers (directly or through the sudo fallback).
 docker_bootstrap_sudo() {
-    require_cmd docker || return 0
+    local soft=0
+    [[ "${1:-}" == "--soft" ]] && soft=1
+    if ! require_cmd docker; then
+        [[ "$soft" -eq 1 ]] && return 0
+        die "docker is not installed. Run without --skip-env-check so phase 1 can install it, or install Docker manually."
+    fi
     docker info >/dev/null 2>&1 && return 0
+    if ! sudo docker info >/dev/null 2>&1; then
+        [[ "$soft" -eq 1 ]] && return 0
+        die "docker is unreachable even with sudo. Check that the docker service is running (systemctl status docker) and that sudo works for this user."
+    fi
     log_warn "docker is installed but this shell can't reach the daemon without sudo (docker group membership not active in this login session?) - falling back to 'sudo docker' for the rest of this run"
-    sudo docker info >/dev/null 2>&1 \
-        || die "docker is unreachable even with sudo. Check that the docker service is running (systemctl status docker) and that sudo works for this user."
     DOCKER_SUDO="sudo"
 
     # Keep sudo's cached credential alive for the rest of this (possibly
