@@ -81,6 +81,23 @@ docker() {
     fi
 }
 
+# The docker() function above only covers calls made by this shell. Child processes
+# (vrnetlab's `make` -> `docker build`, `docker compose` helpers, ...) exec the real docker
+# binary and would hit "permission denied" on the socket. So also put a `docker` shim first
+# on PATH that runs the real binary through sudo. -n: never prompt (the keepalive below
+# keeps the credential fresh), so an expired credential fails loudly instead of hanging
+# invisibly under a spinner. The shim dir is removed on exit (DOCKER_SHIM_DIR, see
+# _on_exit in run_snappi_test.sh).
+DOCKER_SHIM_DIR=""
+_install_docker_sudo_shim() {
+    local real
+    real="$(type -P docker)" || return 0
+    DOCKER_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/snappi-docker-shim.XXXXXX")" || return 0
+    printf '#!/bin/sh\nexec sudo -n %s "$@"\n' "$real" > "$DOCKER_SHIM_DIR/docker"
+    chmod 755 "$DOCKER_SHIM_DIR/docker"
+    export PATH="$DOCKER_SHIM_DIR:$PATH"
+}
+
 # Detects the permission-denied case above and, if found, primes 'sudo
 # docker' for the rest of this run. Must be called in the foreground, before
 # any phase that backgrounds docker calls via run_phase_with_spinner - a
@@ -107,6 +124,7 @@ docker_bootstrap_sudo() {
     fi
     log_warn "docker is installed but this shell can't reach the daemon without sudo (docker group membership not active in this login session?) - falling back to 'sudo docker' for the rest of this run"
     DOCKER_SUDO="sudo"
+    _install_docker_sudo_shim
 
     # Keep sudo's cached credential alive for the rest of this (possibly
     # long-running) script. Without this, sudo's timestamp (~15 min by

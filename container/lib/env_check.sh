@@ -26,6 +26,7 @@ _phase_env_check_impl() {
     _ensure_apt_pkgs git sshpass curl jq ca-certificates make unzip
 
     _ensure_docker
+    _ensure_docker_group
     _ensure_docker_compose
     # containerlab only deploys the virtual chassis and DUT; with deployment.target: physical it never
     # runs, so do not `curl | bash` an installer onto a host (possibly air-gapped) that does not need it.
@@ -61,6 +62,24 @@ _ensure_docker() {
     $SUDO systemctl enable --now docker 2>/dev/null || true
     require_cmd docker || die "docker installation failed"
     log_ok "docker installed ($(docker --version))"
+}
+
+# get.docker.com does not add the invoking user to the docker group, so every later login
+# would still need sudo. Add them (takes effect at the next login; this run keeps working
+# through the sudo fallback, see docker_bootstrap_sudo in common.sh).
+_ensure_docker_group() {
+    local user="${SUDO_USER:-${USER:-$(id -un)}}"
+    [[ "$(id -u)" -eq 0 && -z "${SUDO_USER:-}" ]] && return 0   # plain root needs no group
+    getent group docker >/dev/null 2>&1 || return 0
+    if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+        return 0
+    fi
+    log_info "adding user '$user' to the docker group ..."
+    if $SUDO usermod -aG docker "$user"; then
+        log_ok "added '$user' to the docker group (active after the next login; this run uses 'sudo docker')"
+    else
+        log_warn "could not add '$user' to the docker group - run: sudo usermod -aG docker $user"
+    fi
 }
 
 _ensure_docker_compose() {

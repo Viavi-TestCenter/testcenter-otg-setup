@@ -441,6 +441,7 @@ acquire_lock "$LOCK_FILE"
 _on_exit() {
     release_lock
     [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    [[ -n "${DOCKER_SHIM_DIR:-}" ]] && rm -rf "$DOCKER_SHIM_DIR"
 }
 trap _on_exit EXIT
 
