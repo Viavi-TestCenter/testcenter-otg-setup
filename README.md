@@ -33,7 +33,7 @@ file:
 > `./run_snappi_test.sh --deploy-only` never touches the DUT. `--access-check` and
 > every test stage do append the sonic-mgmt public key to the DUT's
 > `authorized_keys` if it is missing. See
-> [`container/README.md` §7.8](container/README.md#78-deploy-mg-pretest-smoke-test-librun_testssh).
+> [`container/README.md` §4](container/README.md#4-using-your-own-dut-and-stc-chassis) and the warning at its top.
 
 To use it, fill in your environment details in `config.yaml` (VIAVI image paths,
 DUT info, license server, etc.) and run the script. `config.yaml` has two
@@ -42,8 +42,9 @@ looks to sonic-mgmt and the tests). This is the fastest way to
 get a working environment and is the recommended path for first-time and routine
 deployments.
 
-For the full usage details, script options, and `config.yaml` field
-reference, see [`container/README.md`](container/README.md).
+For the full usage details and script options, see
+[`container/README.md`](container/README.md). Every `config.yaml` key is documented in the
+comments of [`container/config.yaml`](container/config.yaml).
 
 **Use the detailed guide below instead if you need to:**
 - Understand what each step is actually doing
@@ -151,7 +152,7 @@ Confirm the exact versions with VIAVI support for your lab — the STC chassis f
 If you're using the automated `container/run_snappi_test.sh` workflow, once these artifacts are placed under `deployment.images.dir` you can run `./run_snappi_test.sh --list-versions` to see which STC versions are currently deliverable/testable and whether the version configured in `deployment.stc.version` is one of them — see [container/README.md §5](container/README.md#5-command-line-usage).
 
 
-**License server (virtual DUT only):** deploying against the virtual `sonic-vs` DUT (§3.3) additionally requires a reachable TestCenter license — set as `SPIRENTD_LICENSE_FILE`/`LICENSE_SERVER` in §3.4/§3.5, format `@hostname` or `host:port` (a network license server, or a local Spirent license manager if you're using a hardware dongle). Contact [VIAVI support](https://www.viavisolutions.com/support) if you don't have one. Physical-DUT lab environments typically already have STC licensing provided by their existing test infrastructure. (With `run_snappi_test.sh`, `deployment.stc.license_server` is required whenever the tool deploys the virtual chassis **or a Labserver**, even with a physical DUT and chassis — see [`container/README.md` §2](container/README.md#2-prerequisites).)
+**License server (virtual DUT only):** deploying against the virtual `sonic-vs` DUT (§3.3) additionally requires a reachable TestCenter license — set as `SPIRENTD_LICENSE_FILE`/`LICENSE_SERVER` in §3.4/§3.5, format `@hostname` or `host:port` (a network license server, or a local Spirent license manager if you're using a hardware dongle). Contact [VIAVI support](https://www.viavisolutions.com/support) if you don't have one. Physical-DUT lab environments typically already have STC licensing provided by their existing test infrastructure. (With `run_snappi_test.sh`, `deployment.stc.license_server` is used whenever the tool deploys the virtual chassis **or a Labserver**, even with a physical DUT and chassis. A missing value only produces a warning and never stops a run — see [`container/README.md` §2](container/README.md#2-prerequisites).)
 
 **Notes:** Docker Engine 27.3.1 and Docker Compose 1.29.2 (or later) on the deployment Linux VM.
 
@@ -199,7 +200,7 @@ docker load -i stc_5.62.0766.tgz
 
 **Build the sonic-vs image** *(skip if testing against real hardware)*:
 
-> **Automated:** if `deployment.dut_vs.image`'s repository is exactly `vrnetlab/sonic_sonic-vs` (any tag - `master` or a release branch like `202511`) and it isn't already present in `docker images` (and no archive is configured/found under `deployment.images.dir`), `run_snappi_test.sh` does the steps below for you automatically, as long as `deployment.dut_vs.build_sonic_vs` (default `true`) is not set to `false`. It always builds the exact tag `deployment.dut_vs.image` asks for, never a different one (e.g. never fabricates `202511` from a `master` build). Where `sonic-vs.img.gz` is downloaded from is controlled by `deployment.dut_vs.download_source` (default `auto`: try Azure Pipelines first, fall back to sonic.software if Azure has no successful build for that tag). Fails with a clear error if the selected source(s) have no published build for it. **None of this branch/tag lookup ever runs for an image already present in `docker images`** - including a custom/manually-built or manually-imported tag with no corresponding SONiC branch name, which is always used as-is. See `deployment.dut_vs.build_sonic_vs` / `deployment.dut_vs.download_source` in [config.yaml](container/config.yaml) / [§6](container/README.md#6-configyaml-reference).
+> **Automated:** if `deployment.dut_vs.image`'s repository is exactly `vrnetlab/sonic_sonic-vs` (any tag - `master` or a release branch like `202511`) and it isn't already present in `docker images` (and no archive is configured/found under `deployment.images.dir`), `run_snappi_test.sh` does the steps below for you automatically, as long as `deployment.dut_vs.build_sonic_vs` (default `true`) is not set to `false`. It always builds the exact tag `deployment.dut_vs.image` asks for, never a different one (e.g. never fabricates `202511` from a `master` build). Where `sonic-vs.img.gz` is downloaded from is controlled by `deployment.dut_vs.download_source` (default `auto`: try Azure Pipelines first, fall back to sonic.software if Azure has no successful build for that tag). Fails with a clear error if the selected source(s) have no published build for it. **None of this branch/tag lookup ever runs for an image already present in `docker images`** - including a custom/manually-built or manually-imported tag with no corresponding SONiC branch name, which is always used as-is. See `deployment.dut_vs.build_sonic_vs` / `deployment.dut_vs.download_source` in [config.yaml](container/config.yaml) (summary in [`container/README.md` §2](container/README.md#2-prerequisites)).
 
 1. Download `sonic-vs.img.gz` for the desired branch. `deployment.dut_vs.download_source` picks which of these the automation above uses (`auto` tries the first and falls back to the second):
    - **Azure Pipelines** (`sonic-build.azurewebsites.net`, pipeline 142 - the default source):
@@ -325,7 +326,7 @@ The commands below use STC version 5.62.0766 as an example. Replace the version 
    ```
    Update the `LICENSE_SERVER` and `LABSERVER` values according to your actual deployment.
    `LICENSE_SERVER` is the SPIRENTD_LICENSE_FILE value — see the `deployment.stc.license_server` field
-   under [§6 `config.yaml` Reference](container/README.md#6-configyaml-reference) for accepted formats
+   under [§2 Prerequisites](container/README.md#2-prerequisites) of `container/README.md` for accepted formats
    (network license server or a local Spirent license manager for a hardware dongle) and
    where to get one if you don't have it. `LABSERVER` is the reachable address of this
    Labserver container itself.
@@ -619,7 +620,7 @@ Beyond the §4.8 patch (needed just to get `deploy-mg` and the smoke test runnin
 ```bash
 cp -R /path/to/example/sonic_snappi/tests/. tests/
 ```
-This is a plain recursive overwrite (not a patch) — safe to re-run any time you pull an updated `example/sonic_snappi/tests`, and it only touches the specific paths present there; every other file under `tests/` is untouched. The automated `run_snappi_test.sh` does this for you on every `full`/`--deploy-only` run when `deployment.sonic_mgmt.custom_tests.overwrite: true` in `config.yaml` (see [`container/README.md` §6](container/README.md#6-configyaml-reference) and [§7.3](container/README.md#73-sonic-mgmt-source-libsonic_mgmtshphase_sonic_mgmt_source)).
+This is a plain recursive overwrite (not a patch) — safe to re-run any time you pull an updated `example/sonic_snappi/tests`, and it only touches the specific paths present there; every other file under `tests/` is untouched. The automated `run_snappi_test.sh` does this for you on every `full`/`--deploy-only` run when `deployment.sonic_mgmt.custom_tests.overwrite: true` in `config.yaml` (see [`container/README.md` §6](container/README.md#6-configuration), "sonic-mgmt source, patch and custom tests").
 
 ---
 
