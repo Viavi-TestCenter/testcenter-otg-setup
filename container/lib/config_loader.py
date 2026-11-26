@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-config_loader.py <config.yaml> [--scope deploy|access|full|show] [--print-migrated]
+config_loader.py <config.yaml> [--scope deploy|access|full|show]
 
 Loads and strictly validates run_snappi_test.sh's config.yaml, then emits it
 on stdout as shell-safe `CFG_*` variable assignments for `eval` by bash.
@@ -8,8 +8,10 @@ on stdout as shell-safe `CFG_*` variable assignments for `eval` by bash.
 config.yaml has exactly two top-level sections:
 
   deployment:  what this tool stands up (images, STC/DUT/Labserver/OTG,
-               sonic-mgmt, report server, cleanup, logging)      -> README §3
-  testbed:     how the lab looks to sonic-mgmt and the tests     -> README §4
+               sonic-mgmt, report server, cleanup, logging)      -> guide §3
+  testbed:     how the lab looks to sonic-mgmt and the tests     -> guide §4
+
+  ("guide" is the parent README.md, the Snappi Environment Setup and Quick Test Guide.)
 
 The loader resolves one effective address per component (STC chassis,
 Labserver, OTG service, DUT) and which section owns it: a component this tool
@@ -17,22 +19,19 @@ deploys has its address in deployment:, an external one (physical,
 provisioned) has it in testbed:. The same value set in both places with
 different values is an error.
 
---scope selects how much of the file is validated (the stages of README §5):
+--scope selects how much of the file is validated (container/README.md §6, "What each command reads"):
   deploy  deployment: only                       (--deploy-only, --destroy, --list-versions)
   access  + testbed.endpoints.* and, for a physical DUT, mgmt_ip/credentials  (--access-check)
   full    + all of testbed:                      (every test stage; default)
   show    like full, but testbed: problems are warnings (--show-config)
 
-A file in the previous flat layout (images:/testcenter:/dut:/... at the top
-level) is detected by schema and migrated in memory with a deprecation
-warning. Warnings go to stderr as "WARN: ..." / "INFO: ..." lines; any
-schema violation aborts with a non-zero exit and an error list on stderr -
-nothing is emitted on stdout on failure.
+Warnings go to stderr as "WARN: ..." / "INFO: ..." lines; any schema
+violation aborts with a non-zero exit and an error list on stderr - nothing is
+emitted on stdout on failure.
 
 Test hook: SNAPPI_HOST_IP_OVERRIDE replaces `hostname -I` (an empty value
 simulates a failed detection).
 """
-import copy
 import difflib
 import ipaddress
 import os
@@ -49,13 +48,8 @@ except ImportError:
     )
     sys.exit(2)
 
-USAGE = "usage: config_loader.py <config.yaml> [--scope deploy|access|full|show] [--print-migrated]\n"
+USAGE = "usage: config_loader.py <config.yaml> [--scope deploy|access|full|show]\n"
 SCOPE_LEVEL = {"deploy": 0, "access": 1, "full": 2, "show": 2}
-
-# Keys that only exist in the previous flat layout.
-LEGACY_TOP_KEYS = ("images", "testcenter", "dut", "otg", "sonic_mgmt", "cleanup", "logging", "allure", "topology")
-LEGACY_DEPLOYMENT_KEYS = ("mode", "labserver", "otg_service", "stc_chassis", "docker_compose")
-LEGACY_TESTBED_KEYS = ("conf_name", "inv_name", "dut_group_name", "server_group")
 
 LIST = "list"  # schema marker: a list of mappings
 
@@ -108,10 +102,6 @@ SCHEMA = {
     },
 }
 OTG_DEPLOYED_PORT = 50051  # hard-coded in otg-compose.yaml and the otgctl default
-PLACEHOLDER_NOTE = (
-    "(config.yaml uses the legacy layout, so key names above are those of the new layout - "
-    "run --show-config on a file that loads to print the migrated layout)"
-)
 
 
 # --------------------------------------------------------------------- helpers
@@ -220,16 +210,6 @@ def check_unknown_keys(node, schema, prefix, rep):
             check_unknown_keys(value, sub, path, rep)
 
 
-def mask_secrets(node):
-    """Mask every non-empty `password` value (the tool redacts passwords in its logs too)."""
-    if isinstance(node, dict):
-        return {k: ("********" if k == "password" and isinstance(v, str) and v else mask_secrets(v))
-                for k, v in node.items()}
-    if isinstance(node, list):
-        return [mask_secrets(x) for x in node]
-    return node
-
-
 def q(v):
     return shlex.quote(str(v))
 
@@ -238,182 +218,9 @@ def flag(v):
     return "1" if v else "0"
 
 
-# ---------------------------------------------------------------------- legacy
-def legacy_evidence(cfg):
-    """Names of keys that exist only in the previous flat layout."""
-    found = [k for k in LEGACY_TOP_KEYS if k in cfg]
-    dep = cfg.get("deployment")
-    if isinstance(dep, dict):
-        found += [f"deployment.{k}" for k in LEGACY_DEPLOYMENT_KEYS if k in dep]
-    tb = cfg.get("testbed")
-    if isinstance(tb, dict):
-        found += [f"testbed.{k}" for k in LEGACY_TESTBED_KEYS if k in tb]
-    return found
-
-
-def detect_legacy(cfg):
-    """True when the file is in the previous flat layout (decided by schema, not by the
-    presence of deployment:/testbed:, which both layouts use)."""
-    return bool(legacy_evidence(cfg))
-
-
-def prune_empty(d):
-    """Drop empty mappings (e.g. an endpoints: {} left by the migration) before printing."""
-    if not isinstance(d, dict):
-        return d
-    pruned = {k: prune_empty(v) for k, v in d.items()}
-    return {k: v for k, v in pruned.items() if v != {}}
-
-
-def migrate_legacy(cfg, rep):
-    """Map a previous-layout file to the new layout in memory (proposal §2)."""
-    g = lambda path, default=None: get(cfg, path, default)  # noqa: E731
-    D, T = {}, {}
-    new = {"deployment": D, "testbed": T}
-
-    rep.warn(
-        "config.yaml uses the legacy flat layout (deprecated, still supported for one more release): "
-        "it was migrated in memory to the deployment:/testbed: layout. "
-        "Run --show-config to print the migrated layout and copy it into config.yaml."
-    )
-
-    # ---- target: testcenter.mode + dut.mode must always agree
-    tc_mode = g("testcenter.mode", "virtual")
-    dut_mode = g("dut.mode")
-    if tc_mode not in ("virtual", "physical"):
-        rep.err("testcenter.mode must be 'virtual' or 'physical'")
-    if dut_mode is None:
-        rep.err("missing required key: dut.mode")
-    elif dut_mode not in ("virtual", "physical"):
-        rep.err("dut.mode must be 'virtual' or 'physical'")
-    if dut_mode in ("virtual", "physical") and tc_mode in ("virtual", "physical") and dut_mode != tc_mode:
-        rep.err(
-            f"testcenter.mode ({tc_mode!r}) and dut.mode ({dut_mode!r}) must match - "
-            "mixed virtual/physical deployments (e.g. a containerized STC chassis cabled to a "
-            "physical DUT) are not supported. Set both to 'virtual' or both to 'physical'."
-        )
-    target = dut_mode if dut_mode in ("virtual", "physical") else (tc_mode if tc_mode in ("virtual", "physical") else "virtual")
-    D["target"] = target
-    if target == "physical":
-        rep.warn(
-            "legacy physical lab: testbed.deploy_minigraph now defaults to 'auto', which never pushes a minigraph "
-            "to a physical DUT (the legacy layout always pushed it). Set testbed.deploy_minigraph: true to keep "
-            "the old behaviour - it OVERWRITES the DUT's running configuration."
-        )
-
-    # ---- images, stc
-    if g("images.dir") is not None:
-        D["images"] = {"dir": g("images.dir")}
-    stc = {}
-    for new_k, old_k in (("version", "testcenter.version"), ("license_server", "testcenter.license_server")):
-        if g(old_k) is not None:
-            stc[new_k] = g(old_k)
-    D["stc"] = stc
-
-    # ---- Labserver / OTG service
-    mode = g("deployment.mode")
-    ol = {}
-    D["otg_labserver"] = ol
-    endpoints = {}
-    T["endpoints"] = endpoints
-    if mode == "docker-compose":
-        ol["docker_compose"] = {"enabled": True, "keep_build_image": g("deployment.docker_compose.keep_build_image", True)}
-    elif mode in ("standalone", "provisioned"):
-        ol["docker_compose"] = {"enabled": False}
-        ol["labserver"] = {"mode": mode}
-        ol["otg_service"] = {"mode": mode}
-    elif mode is None:
-        rep.err("missing required key: deployment.mode")
-    else:
-        rep.err("deployment.mode must be 'standalone', 'provisioned', or 'docker-compose'")
-
-    lab_ip = g("deployment.labserver.ip", "")
-    otg_ip = g("deployment.otg_service.ip", "")
-    otg_port = g("deployment.otg_service.port", OTG_DEPLOYED_PORT)
-    norm = lambda ip: "" if is_loopback(ip) else ip  # noqa: E731
-    if mode in ("docker-compose", "standalone"):
-        a, b = norm(lab_ip), norm(otg_ip)
-        if a and b and a != b:
-            rep.warn(
-                f"deployment.labserver.ip ({a}) and deployment.otg_service.ip ({b}) differ; the new layout has one "
-                f"deployment.otg_labserver.host_ip for both - using {a}"
-            )
-        ol["host_ip"] = a or b
-        if otg_port != OTG_DEPLOYED_PORT:
-            rep.warn(
-                f"deployment.otg_service.port ({otg_port}) ignored: a deployed OTG service always listens on {OTG_DEPLOYED_PORT}"
-            )
-    elif mode == "provisioned":
-        endpoints["labserver_ip"] = lab_ip
-        endpoints["otg_service"] = {"ip": otg_ip, "port": otg_port}
-    rest_port = g("otg.rest_port")
-    if rest_port is not None and rest_port != otg_port:
-        rep.warn(
-            f"otg.rest_port ({rest_port}) differs from deployment.otg_service.port ({otg_port}) - "
-            f"using the service port ({otg_port}) for both"
-        )
-
-    # ---- STC chassis address: owned by whoever creates the chassis
-    chassis = g("deployment.stc_chassis.ip")
-    if chassis is not None:
-        if target == "virtual":
-            stc["mgmt_ip"] = chassis
-        else:
-            endpoints["stc_chassis_ip"] = chassis
-
-    # ---- DUT
-    dut = g("dut", {}) if isinstance(g("dut", {}), dict) else {}
-    dut_vs, tb_dut = {}, {}
-    D["dut_vs"] = dut_vs
-    T["dut"] = tb_dut
-    if target == "virtual":
-        for k in ("image", "image_archive", "build_sonic_vs", "download_source", "keep_dut_artifacts", "keep_dut_image"):
-            if k in dut:
-                dut_vs[k] = dut[k]
-    ident = dut_vs if target == "virtual" else tb_dut
-    for k in ("hostname", "mgmt_ip", "hwsku", "credentials"):
-        if k in dut:
-            ident[k] = copy.deepcopy(dut[k])
-    for k in ("iface_speed", "total_ports"):
-        if k in dut:
-            tb_dut[k] = dut[k]
-    links = dut.get("links")
-    if isinstance(links, list):
-        out_links = []
-        saw_host_interface = False
-        for link in links:
-            if isinstance(link, dict):
-                link = dict(link)
-                if "host_interface" in link:
-                    saw_host_interface = True
-                    del link["host_interface"]
-            out_links.append(link)
-        tb_dut["links"] = out_links
-        if saw_host_interface:
-            rep.warn("dut.links[].host_interface is deprecated and unused - dropped")
-    elif "links" in dut:
-        tb_dut["links"] = links
-
-    # ---- otg, sonic_mgmt, cleanup, logging, allure, testbed, topology
-    if isinstance(g("otg"), dict):
-        T["otg"] = {k: copy.deepcopy(v) for k, v in g("otg").items() if k in ("credentials", "ssh_user")}
-    for key in ("sonic_mgmt", "cleanup", "logging"):
-        if g(key) is not None:
-            D[key] = copy.deepcopy(g(key))
-    if isinstance(g("allure"), dict):
-        D["allure"] = {k: v for k, v in g("allure").items() if k in ("enabled", "host", "ui_port", "api_port")}
-        if "project_id" in g("allure"):
-            T["reporting"] = {"allure_project_id": g("allure.project_id")}
-    if isinstance(g("testbed"), dict):
-        T["definition"] = {k: v for k, v in g("testbed").items() if k in LEGACY_TESTBED_KEYS}
-    if g("topology") is not None:
-        T["topology"] = copy.deepcopy(g("topology"))
-    return new
-
-
 # ------------------------------------------------------- validate and resolve
 def resolve(cfg, scope, rep):
-    """Validate the new-layout dict `cfg` for `scope` and return the CFG_* values (ordered dict)."""
+    """Validate the config dict `cfg` for `scope` and return the CFG_* values (ordered dict)."""
     maxlvl = SCOPE_LEVEL[scope]
     E = lambda msg, level=0: rep.err(msg, level)  # noqa: E731
     out = {}
@@ -776,7 +583,7 @@ def usage_error(msg=None):
 
 def main():
     argv = sys.argv[1:]
-    scope, path, i, print_migrated = "full", None, 0, False
+    scope, path, i = "full", None, 0
     while i < len(argv):
         a = argv[i]
         if a == "--scope":
@@ -785,8 +592,6 @@ def main():
             scope, i = argv[i + 1], i + 2
         elif a.startswith("--scope="):
             scope, i = a.split("=", 1)[1], i + 1
-        elif a == "--print-migrated":
-            print_migrated, i = True, i + 1
         elif path is None and not a.startswith("-"):
             path, i = a, i + 1
         else:
@@ -810,31 +615,8 @@ def main():
         sys.exit(2)
 
     rep = Report()
-    legacy = False
-    evidence = legacy_evidence(cfg)
-    has_target = isinstance(cfg.get("deployment"), dict) and "target" in cfg["deployment"]
-    if evidence and has_target:
-        # Both layouts use deployment: and testbed:, so a mixed file cannot be interpreted.
-        rep.err(
-            f"legacy key(s) {', '.join(evidence)} cannot be mixed with the new layout (deployment.target is set). "
-            "Move every key to deployment:/testbed: or remove deployment.target to keep "
-            "the legacy layout."
-        )
-        values = {}
-    else:
-        if detect_legacy(cfg):
-            legacy = True
-            cfg = migrate_legacy(cfg, rep)
-        elif print_migrated:
-            sys.stderr.write(f"ERROR: {path} is already in the new deployment:/testbed: layout - nothing to migrate\n")
-            sys.exit(1)
-        else:
-            # the legacy mapper copies keys selectively, so only a native file can have typos to report
-            check_unknown_keys(cfg, SCHEMA, "", rep)
-        if print_migrated:
-            scope = "show"  # print what can be migrated; testbed: problems are not fatal here
-        values = resolve(cfg, scope, rep)
-        values["CFG_CONFIG_LEGACY"] = flag(legacy)
+    check_unknown_keys(cfg, SCHEMA, "", rep)
+    values = resolve(cfg, scope, rep)
 
     maxlvl = SCOPE_LEVEL[scope]
     fatal = []
@@ -857,21 +639,10 @@ def main():
         sys.stderr.write("Config validation failed (%s):\n" % path)
         for msg in fatal:
             sys.stderr.write(f"  - {msg}\n")
-        if legacy:
-            sys.stderr.write(f"  {PLACEHOLDER_NOTE}\n")
         sys.exit(1)
 
     for kind, msg in rep.notes:
         sys.stderr.write(f"{kind}: {msg}\n")
-    if print_migrated:
-        # Proposal §4.6: --show-config prints the migrated layout so users can copy it.
-        sys.stdout.write(
-            "# Migrated in memory from the legacy flat layout (run_snappi_test.sh --show-config).\n"
-            "# Review it, then save it as config.yaml to stop the deprecation warning.\n"
-            "# NOTE: passwords are masked as ******** - copy the real values from your old config.yaml.\n"
-        )
-        sys.stdout.write(yaml.safe_dump(mask_secrets(prune_empty(cfg)), sort_keys=False, default_flow_style=False))
-        return
     print("\n".join(f"{k}={q(v)}" for k, v in values.items()))
 
 

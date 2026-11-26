@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2312  # pipelines/command substitutions in tests and log helpers are best-effort; failures are handled by callers; variables are consumed by the sourced code or other lib files
 # test_gen_config.sh - gen_config.sh after the stage split (proposal §3b items 1-2):
 #   - the deploy stage no longer generates ansible/testbed files (phase_generate_ansible_config is gone)
 #   - the containerlab topology is generated for the deploy stage from CFG_CLAB_LINK_COUNT, with or
@@ -8,25 +9,25 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "$HERE/../lib/common.sh"
+source "${HERE}/../lib/common.sh"
 # shellcheck disable=SC1091
-source "$HERE/../lib/gen_config.sh"
+source "${HERE}/../lib/gen_config.sh"
 fails=0
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-WORK_DIR="$TMP/work"; CLAB_TOPO_FILE="$WORK_DIR/snappi-topology.yml"
+WORK_DIR="${TMP}/work"; CLAB_TOPO_FILE="${WORK_DIR}/snappi-topology.yml"
 
 check() {
     if [[ "$2" == "1" ]]; then echo "ok   - $1"; else echo "FAIL - $1 ${3:+($3)}"; fails=$((fails + 1)); fi
 }
-count() { grep -c -- "$1" "$CLAB_TOPO_FILE"; }
+count() { grep -c -- "$1" "${CLAB_TOPO_FILE}"; }
 
 setup_virtual() {
     CFG_TC_MODE=virtual; CFG_TC_VERSION=5.62.0766; CFG_STC_CHASSIS_IP=192.168.1.2
     CFG_DUT_HOSTNAME=sonic-s6100-dut1; CFG_DUT_MGMT_IP=192.168.1.3; CFG_DUT_IMAGE=vrnetlab/sonic_sonic-vs:master
-    CFG_DUT_USER=admin; CFG_DUT_PASSWORD=admin; CFG_DUT_HWSKU=Force10-S6000
-    rm -rf "$WORK_DIR"
+    CFG_DUT_USER="admin"; CFG_DUT_PASSWORD="admin"; CFG_DUT_HWSKU="Force10-S6000"
+    rm -rf "${WORK_DIR}"
 }
 
 check "phase_generate_ansible_config is gone (deploy no longer generates testbed files)" \
@@ -61,7 +62,7 @@ check "topology names the chassis image and the DUT image" \
 # --- physical target: nothing is generated (no containerlab)
 setup_virtual; CFG_TC_MODE=physical; CFG_DUT_LINKS_COUNT=0; CFG_CLAB_LINK_COUNT=2
 _gen_clab_topology >/dev/null 2>&1
-check "physical target: no containerlab topology file" "$([[ ! -e "$CLAB_TOPO_FILE" ]] && echo 1 || echo 0)"
+check "physical target: no containerlab topology file" "$([[ ! -e "${CLAB_TOPO_FILE}" ]] && echo 1 || echo 0)"
 
 echo
-if [[ "$fails" -eq 0 ]]; then echo "ALL PASSED"; else echo "$fails FAILED"; exit 1; fi
+if [[ "${fails}" -eq 0 ]]; then echo "ALL PASSED"; else echo "${fails} FAILED"; exit 1; fi

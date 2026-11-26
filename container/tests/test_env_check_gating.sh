@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2312  # pipelines/command substitutions in tests and log helpers are best-effort; failures are handled by callers; variables are consumed by the sourced code or other lib files
 # test_env_check_gating.sh - phase 1 (host dependency check) installs only what the target needs.
 #
 # Review M6: `_ensure_containerlab` ran `curl | bash` even for deployment.target: physical, where the
@@ -9,9 +10,9 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "$HERE/../lib/common.sh"
+source "${HERE}/../lib/common.sh"
 # shellcheck disable=SC1091
-source "$HERE/../lib/env_check.sh"
+source "${HERE}/../lib/env_check.sh"
 fails=0
 
 check() {
@@ -21,7 +22,7 @@ check() {
 run_env_check() {
     local target="$1"
     (
-        CFG_TC_MODE="$target"
+        CFG_TC_MODE="${target}"
         calls=()
         _ensure_apt_pkgs()       { calls+=(apt); }
         _ensure_docker()         { calls+=(docker); }
@@ -41,4 +42,4 @@ check "physical target: containerlab is NOT installed (it never runs), the rest 
     "$(run_env_check physical)" "rc=0 apt docker compose python"
 
 echo
-if [[ "$fails" -eq 0 ]]; then echo "ALL PASSED"; else echo "$fails FAILED"; exit 1; fi
+if [[ "${fails}" -eq 0 ]]; then echo "ALL PASSED"; else echo "${fails} FAILED"; exit 1; fi

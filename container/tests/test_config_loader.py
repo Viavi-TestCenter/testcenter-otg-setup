@@ -67,69 +67,6 @@ def mutated(name, fn):
     return cfg
 
 
-class LegacyAndLayout(unittest.TestCase):
-    def test_legacy_file_matches_new_layout_twin(self):
-        legacy, twin = run("legacy_main.yaml"), run("virtual_full.yaml")
-        self.assertEqual(legacy.rc, 0, legacy.stderr)
-        self.assertEqual(twin.rc, 0, twin.stderr)
-        # CFG_CONFIG_LEGACY says which file format was read, not anything about the lab
-        self.assertEqual((legacy.vars.pop("CFG_CONFIG_LEGACY"), twin.vars.pop("CFG_CONFIG_LEGACY")), ("1", "0"))
-        self.assertEqual(legacy.vars, twin.vars)
-        self.assertIn("deprecated", legacy.stderr.lower())
-        self.assertIn("host_interface", legacy.stderr)
-        self.assertNotIn("deprecated", twin.stderr.lower())
-
-    def test_mixed_layout_is_rejected_naming_the_keys(self):
-        r = run("mixed.yaml")
-        self.assertEqual(r.rc, 1)
-        for key in ("images", "dut", "deployment.target"):
-            self.assertIn(key, r.stderr)
-
-    def test_legacy_otg_rest_port_difference_warns_and_uses_service_port(self):
-        cfg = mutated("legacy_main.yaml", lambda c: c["otg"].update(rest_port=50052))
-        r = run(cfg)
-        self.assertEqual(r.rc, 0, r.stderr)
-        self.assertEqual(r.vars["CFG_OTG_REST_PORT"], "50051")
-        self.assertIn("otg.rest_port", r.stderr)
-
-    def test_legacy_physical_moves_addresses_to_testbed_and_never_pushes(self):
-        def f(c):
-            c["testcenter"]["mode"] = "physical"
-            c["dut"]["mode"] = "physical"
-            c["deployment"]["stc_chassis"]["ip"] = "10.0.0.20"
-            c["dut"]["mgmt_ip"] = "10.0.0.30"
-        r = run(mutated("legacy_main.yaml", f))
-        self.assertEqual(r.rc, 0, r.stderr)
-        self.assertEqual(r.vars["CFG_STC_CHASSIS_OWNER"], "testbed")
-        self.assertEqual(r.vars["CFG_STC_CHASSIS_IP"], "10.0.0.20")
-        self.assertEqual(r.vars["CFG_DUT_OWNER"], "testbed")
-        self.assertEqual(r.vars["CFG_DUT_MGMT_IP"], "10.0.0.30")
-        self.assertEqual(r.vars["CFG_DEPLOY_MINIGRAPH_EFFECTIVE"], "0")
-        self.assertIn("deploy_minigraph", r.stderr)
-
-    def test_legacy_provisioned_mode_moves_services_to_testbed(self):
-        def f(c):
-            c["deployment"]["mode"] = "provisioned"
-            c["deployment"]["labserver"]["ip"] = "10.0.0.21"
-            c["deployment"]["otg_service"]["ip"] = "10.0.0.22"
-        r = run(mutated("legacy_main.yaml", f))
-        self.assertEqual(r.rc, 0, r.stderr)
-        self.assertEqual(r.vars["CFG_LABSERVER_MODE"], "provisioned")
-        self.assertEqual(r.vars["CFG_OTG_MODE"], "provisioned")
-        self.assertEqual(r.vars["CFG_LABSERVER_IP"], "10.0.0.21")
-        self.assertEqual(r.vars["CFG_OTG_SERVICE_IP"], "10.0.0.22")
-        self.assertEqual(r.vars["CFG_LABSERVER_OWNER"], "testbed")
-        self.assertEqual(r.vars["CFG_OTG_SERVICE_OWNER"], "testbed")
-
-    def test_legacy_mismatched_modes_are_rejected(self):
-        def f(c):
-            c["testcenter"]["mode"] = "virtual"
-            c["dut"]["mode"] = "physical"
-        r = run(mutated("legacy_main.yaml", f))
-        self.assertEqual(r.rc, 1)
-        self.assertIn("must match", r.stderr)
-
-
 class ShippedConfig(unittest.TestCase):
     SHIPPED = os.path.join(HERE, "..", "config.yaml")
 
@@ -139,66 +76,12 @@ class ShippedConfig(unittest.TestCase):
                 r = run(os.path.abspath(self.SHIPPED), scope)
                 self.assertEqual(r.rc, 0, r.stderr)
 
-    def test_shipped_config_describes_the_same_lab_as_the_old_shipped_one(self):
-        # The only intended difference: allure.enabled now defaults to false (it was true).
-        old, new = run("legacy_main.yaml").vars, run(os.path.abspath(self.SHIPPED)).vars
-        old.pop("CFG_CONFIG_LEGACY"), new.pop("CFG_CONFIG_LEGACY")
-        self.assertEqual(old.pop("CFG_ALLURE_ENABLED"), "1")
-        self.assertEqual(new.pop("CFG_ALLURE_ENABLED"), "0")
-        self.assertEqual(old, new)
-
-
-class PrintMigrated(unittest.TestCase):
-    """Proposal §4.6: --show-config prints the migrated layout so users can copy it."""
-
-    def migrated_yaml(self, name="legacy_main.yaml"):
-        with tempfile.TemporaryDirectory() as d:
-            p = subprocess.run([sys.executable, LOADER, os.path.join(FIX, name), "--print-migrated"],
-                               capture_output=True, text=True,
-                               env=dict(os.environ, SNAPPI_HOST_IP_OVERRIDE=HOST))
-            return p.returncode, p.stdout, p.stderr
-
-    def test_legacy_file_is_printed_as_a_valid_new_layout_file(self):
-        rc, out, err = self.migrated_yaml()
-        self.assertEqual(rc, 0, err)
-        migrated = yaml.safe_load(out)
-        self.assertEqual(sorted(migrated), ["deployment", "testbed"])
-        self.assertEqual(migrated["deployment"]["target"], "virtual")
-        self.assertNotIn("host_interface", out)
-
-    def test_passwords_are_masked_in_the_printed_layout(self):
-        # Review M2: --show-config never printed secrets (people paste it into tickets); the
-        # migrated block must not start doing so. The tool already redacts passwords in its logs.
-        rc, out, err = self.migrated_yaml()
-        self.assertEqual(rc, 0, err)
-        self.assertNotIn("password: admin", out)
-        self.assertGreaterEqual(out.count("********"), 2)       # DUT and OTG passwords
-        self.assertIn("passwords are masked", out)
-
-    def test_migrated_output_resolves_to_exactly_the_same_values_as_the_legacy_file(self):
-        rc, out, err = self.migrated_yaml()
-        self.assertEqual(rc, 0, err)
-
-        def unmask(node):  # the legacy fixture's passwords are all "admin"
-            if isinstance(node, dict):
-                return {k: ("admin" if v == "********" else unmask(v)) for k, v in node.items()}
-            return node
-
-        legacy, again = run("legacy_main.yaml"), run(unmask(yaml.safe_load(out)))
-        self.assertEqual(again.rc, 0, again.stderr)
-        again.vars.pop("CFG_CONFIG_LEGACY"), legacy.vars.pop("CFG_CONFIG_LEGACY")
-        self.assertEqual(legacy.vars, again.vars)
-        self.assertNotIn("deprecated", again.stderr.lower())
-
-    def test_a_file_in_the_new_layout_has_nothing_to_migrate(self):
-        rc, out, err = self.migrated_yaml("virtual_full.yaml")
-        self.assertEqual(rc, 1)
-        self.assertEqual(out, "")
-        self.assertIn("nothing to migrate", err)
-
-    def test_layout_is_exported_for_the_shell(self):
-        self.assertEqual(run("legacy_main.yaml").vars["CFG_CONFIG_LEGACY"], "1")
-        self.assertEqual(run("virtual_full.yaml").vars["CFG_CONFIG_LEGACY"], "0")
+class FlatLayoutRejected(unittest.TestCase):
+    def test_old_flat_layout_is_rejected_not_migrated(self):
+        r = run({"images": {"dir": "./images"}, "testcenter": {"mode": "virtual"}, "dut": {"mode": "virtual"}})
+        self.assertEqual(r.rc, 1)
+        self.assertIn("unknown top-level key: images", r.stderr)
+        self.assertIn("missing required key: deployment", r.stderr)
 
 
 class Scopes(unittest.TestCase):
@@ -405,19 +288,7 @@ class LoopbackServices(unittest.TestCase):
     container and otgctl cannot reach this host through loopback); an external (provisioned) service
     written as 127.0.0.1/localhost must still get this host's real address."""
 
-    def test_legacy_provisioned_loopback_services_resolve_to_this_host(self):
-        def f(c):
-            c["deployment"]["mode"] = "provisioned"
-            c["deployment"]["labserver"]["ip"] = "127.0.0.1"
-            c["deployment"]["otg_service"]["ip"] = "localhost"
-        r = run(mutated("legacy_main.yaml", f))
-        self.assertEqual(r.rc, 0, r.stderr)
-        self.assertEqual(r.vars["CFG_LABSERVER_IP"], HOST)
-        self.assertEqual(r.vars["CFG_OTG_SERVICE_IP"], HOST)
-        self.assertEqual((r.vars["CFG_LABSERVER_OWNER"], r.vars["CFG_OTG_SERVICE_OWNER"]), ("testbed", "testbed"))
-        self.assertIn("loopback", r.stderr)
-
-    def test_new_layout_provisioned_loopback_services_resolve_to_this_host(self):
+    def test_provisioned_loopback_services_resolve_to_this_host(self):
         def f(c):
             c["testbed"]["endpoints"]["labserver_ip"] = "localhost"
             c["testbed"]["endpoints"]["otg_service"]["ip"] = "127.0.1.1"
@@ -477,10 +348,6 @@ class UnknownKeys(unittest.TestCase):
     def test_unknown_keys_are_warnings_never_errors(self):
         cfg = mutated("virtual_full.yaml", lambda c: c["deployment"].update(not_a_key=1))
         self.assertEqual(run(cfg).rc, 0)
-
-    def test_legacy_files_are_not_checked(self):
-        cfg = mutated("legacy_main.yaml", lambda c: c["dut"].update(not_a_key=1))
-        self.assertNotIn("unknown key", run(cfg).stderr)
 
 
 class DeployMinigraph(unittest.TestCase):

@@ -59,8 +59,7 @@
 #   --show-config         Load, validate and print the resolved run configuration (including
 #                          each component's address and which section owns it), then exit.
 #                          Read-only - no lock, no log dir, no phases run. testbed: problems are
-#                          shown as warnings. For a legacy flat config.yaml it also prints the
-#                          migrated deployment:/testbed: layout so you can copy it.
+#                          shown as warnings.
 #   --list-versions       Scan deployment.images.dir and report which TestCenter (STC) versions
 #                          are currently deliverable/testable (STC + labserver artifacts
 #                          present, OTG service installer matching major.minor), plus
@@ -70,8 +69,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$SCRIPT_DIR/lib"
-CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+LIB_DIR="${SCRIPT_DIR}/lib"
+CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 
 MODE="full"          # full | deploy-only | access-check | gen-config | deploy-mg | pretest | smoke-test | test-only | validate | destroy | show-config | list-versions
 SKIP_ENV_CHECK=0
@@ -101,27 +100,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 # shellcheck source=lib/common.sh
-source "$LIB_DIR/common.sh"
+source "${LIB_DIR}/common.sh"
 # shellcheck source=lib/config.sh
-source "$LIB_DIR/config.sh"
+source "${LIB_DIR}/config.sh"
 # shellcheck source=lib/env_check.sh
-source "$LIB_DIR/env_check.sh"
+source "${LIB_DIR}/env_check.sh"
 # shellcheck source=lib/sonic_mgmt.sh
-source "$LIB_DIR/sonic_mgmt.sh"
+source "${LIB_DIR}/sonic_mgmt.sh"
 # shellcheck source=lib/gen_config.sh
-source "$LIB_DIR/gen_config.sh"
+source "${LIB_DIR}/gen_config.sh"
 # shellcheck source=lib/deploy.sh
-source "$LIB_DIR/deploy.sh"
+source "${LIB_DIR}/deploy.sh"
 # shellcheck source=lib/verify.sh
-source "$LIB_DIR/verify.sh"
+source "${LIB_DIR}/verify.sh"
 # shellcheck source=lib/run_tests.sh
-source "$LIB_DIR/run_tests.sh"
+source "${LIB_DIR}/run_tests.sh"
 # shellcheck source=lib/cleanup.sh
-source "$LIB_DIR/cleanup.sh"
+source "${LIB_DIR}/cleanup.sh"
 # shellcheck source=lib/report.sh
-source "$LIB_DIR/report.sh"
+source "${LIB_DIR}/report.sh"
 # shellcheck source=lib/versions.sh
-source "$LIB_DIR/versions.sh"
+source "${LIB_DIR}/versions.sh"
 
 # deployment.stc.license_server tells this tool which license server to write into a Labserver it
 # deploys, and which one a virtual (containerized) STC chassis uses. It is only advisory here: the
@@ -133,24 +132,28 @@ source "$LIB_DIR/versions.sh"
 # checked here, not in the loader.
 check_license_server() {
     local reason=""
-    if [[ "$CFG_TC_MODE" == "virtual" && ( "$MODE" == "full" || "$MODE" == "test-only" || "$MODE" == "smoke-test" ) ]]; then
+    if [[ "${CFG_TC_MODE}" == "virtual" && ( "${MODE}" == "full" || "${MODE}" == "test-only" || "${MODE}" == "smoke-test" ) ]]; then
         reason="this run sends real traffic through a virtual (containerized) STC chassis"
     fi
-    if [[ "$CFG_LABSERVER_MODE" != "provisioned" && "$MODE" == "full" ]]; then
+    if [[ "${CFG_LABSERVER_MODE}" != "provisioned" && "${MODE}" == "full" ]]; then
         reason="this tool deploys the Labserver and writes the license server into it"
     fi
-    [[ -n "$reason" ]] || return 0
+    [[ -n "${reason}" ]] || return 0
     license_server_valid && return 0
     [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
 
-    if [[ "$CFG_LABSERVER_MODE" == "provisioned" ]]; then
-        log_warn "deployment.stc.license_server is empty or still the placeholder '@license-server.example.com'. The Labserver is provisioned (not deployed by this tool), so this value is not used; make sure that Labserver is licensed for the virtual chassis. You can ignore this if it already is."
+    if [[ "${CFG_LABSERVER_MODE}" == "provisioned" ]]; then
+        log_warn "deployment.stc.license_server is empty or still the placeholder."
+        log_detail "The Labserver is provisioned (not deployed by this tool), so this value is not used."
+        log_detail "- Make sure that Labserver is licensed for the virtual chassis."
+        log_detail "- Already licensed? You can ignore this."
         return 0
     fi
 
-    log_warn "deployment.stc.license_server is empty or still the placeholder '@license-server.example.com'; ${reason}.
-         If the Labserver is licensed another way (an Aion license, or a license server you configured in the Labserver yourself) you can ignore this.
-         Otherwise set a valid license server (for example '@hostname' or 'host:port') and run --deploy-only again; the STC tests need a licensed Labserver."
+    log_warn "deployment.stc.license_server is empty or still the placeholder."
+    log_detail "Why this matters: ${reason}."
+    log_detail "- Licensed another way (an Aion license, or a license server set in the Labserver itself)? You can ignore this."
+    log_detail "- Otherwise set a valid license server (for example '@hostname' or 'host:port') in config.yaml and run --deploy-only again; the STC tests need a licensed Labserver."
 }
 
 # Virtual lab only. --smoke-test and --test-only do not redeploy, so they would run against a
@@ -159,23 +162,26 @@ check_license_server() {
 # missing, since check_license_server has just said so. The full run redeploys first, and a
 # physical chassis has its own licensing path, so neither is checked here.
 check_labserver_licensed() {
-    [[ "$CFG_TC_MODE" == "virtual" && ( "$MODE" == "smoke-test" || "$MODE" == "test-only" ) ]] || return 0
+    [[ "${CFG_TC_MODE}" == "virtual" && ( "${MODE}" == "smoke-test" || "${MODE}" == "test-only" ) ]] || return 0
     license_server_valid || return 0
     [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
-    state_owns "$STATE_FILE" LABSERVER_UNLICENSED || return 0
-    log_warn "The Labserver was deployed without a license server, and deployment.stc.license_server is set now.
-         If you licensed it another way you can ignore this. Otherwise run --deploy-only again to redeploy the Labserver with the configured license server."
+    state_owns "${STATE_FILE}" LABSERVER_UNLICENSED || return 0
+    log_warn "The Labserver was deployed without a license server."
+    log_detail "deployment.stc.license_server is set in config.yaml now, but the running Labserver does not use it."
+    log_detail "- Licensed it another way? You can ignore this."
+    log_detail "- Otherwise run --deploy-only again to redeploy the Labserver with the configured license server."
 }
 
 # After --deploy-only on a virtual lab: say so when the Labserver came up without a license
 # server. Printed here, in the foreground, because the deploy phase's own output goes to a log file.
 warn_labserver_unlicensed() {
-    [[ "$MODE" == "deploy-only" && "$CFG_TC_MODE" == "virtual" ]] || return 0
+    [[ "${MODE}" == "deploy-only" && "${CFG_TC_MODE}" == "virtual" ]] || return 0
     [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
-    state_owns "$STATE_FILE" LABSERVER_UNLICENSED || return 0
-    log_warn "The Labserver was deployed without a license server (deployment.stc.license_server is empty or still the placeholder '@license-server.example.com').
-         If you license it another way (an Aion license, or a license server you configure in the Labserver yourself) you can ignore this.
-         Otherwise set a valid license server in config.yaml and run --deploy-only again before running tests."
+    state_owns "${STATE_FILE}" LABSERVER_UNLICENSED || return 0
+    log_warn "The Labserver was deployed without a license server."
+    log_detail "deployment.stc.license_server is empty or still the placeholder '@license-server.example.com'."
+    log_detail "- Licensed another way (an Aion license, or a license server set in the Labserver itself)? You can ignore this."
+    log_detail "- Otherwise set a valid license server in config.yaml and run --deploy-only again before running tests."
 }
 
 # Does this mode need a reachable docker daemon from the start? --gen-config does not: it only
@@ -183,21 +189,22 @@ warn_labserver_unlicensed() {
 # container (or docker itself) is not available, so it must not prompt for sudo or die
 # without docker (docker_bootstrap_sudo does both).
 mode_needs_docker() {
-    [[ "$MODE" != "gen-config" ]]
+    [[ "${MODE}" != "gen-config" ]]
 }
 
 # Will phase 1 (phase_env_check) run in this invocation? It is what installs docker, so the
 # docker bootstrap must not be fatal before it has had its chance.
 env_check_will_run() {
-    [[ ( "$MODE" == "full" || "$MODE" == "deploy-only" ) && "$SKIP_ENV_CHECK" -ne   1 ]]
+    [[ ( "${MODE}" == "full" || "${MODE}" == "deploy-only" ) && "${SKIP_ENV_CHECK}" -ne   1 ]]
 }
 
 # The post-deploy modes assume stage 1 already ran: the sonic-mgmt container
 # must be up and the source checkout present.
 require_deployed_environment() {
-    docker ps --format '{{.Names}}' | grep -qx "$SONIC_MGMT_CONTAINER" \
-        || die "sonic-mgmt container '$SONIC_MGMT_CONTAINER' is not running. --${MODE} assumes the environment is already deployed - run without this option (or with --deploy-only) first."
-    [[ -d "$SONIC_MGMT_DIR/.git" ]] || die "sonic-mgmt source not found at $SONIC_MGMT_DIR"
+    docker ps --format '{{.Names}}' | grep -qx "${SONIC_MGMT_CONTAINER}" \
+        || die_wrap "sonic-mgmt container '${SONIC_MGMT_CONTAINER}' is not running." \
+            "--${MODE} assumes the environment is already deployed. Run without this option (or with --deploy-only) first."
+    [[ -d "${SONIC_MGMT_DIR}/.git" ]] || die "sonic-mgmt source not found at ${SONIC_MGMT_DIR}"
 }
 
 # Stage 2: reachability of every component, DUT login, key install on a physical DUT.
@@ -222,15 +229,16 @@ run_gen_step() {
 # tests/test_stage_flow.sh stubs every phase and asserts the call order per mode.
 run_stages() {
     # ---------------------------------------------------------------- destroy ---
-    if [[ "$MODE" == "destroy" ]]; then
+    if [[ "${MODE}" == "destroy" ]]; then
         phase_destroy
         exit $?
     fi
 
     # ------------------------------------------------- stage 3: gen-config alone ---
-    if [[ "$MODE" == "gen-config" ]]; then
-        [[ -d "$SONIC_MGMT_DIR/.git" ]] \
-            || die "sonic-mgmt source not found at $SONIC_MGMT_DIR - --gen-config assumes the environment has already been deployed at least once (run without this option, or --deploy-only, first)."
+    if [[ "${MODE}" == "gen-config" ]]; then
+        [[ -d "${SONIC_MGMT_DIR}/.git" ]] \
+            || die_wrap "sonic-mgmt source not found at ${SONIC_MGMT_DIR}." \
+                "--gen-config assumes the environment has already been deployed at least once. Run without this option, or --deploy-only, first."
         phase_gen_config
         exit $?
     fi
@@ -238,10 +246,10 @@ run_stages() {
     print_run_config
 
     # ----------------------------------------------- stage 1: infra + deploy ---
-    if [[ "$MODE" == "full" || "$MODE" == "deploy-only" ]]; then
+    if [[ "${MODE}" == "full" || "${MODE}" == "deploy-only" ]]; then
         phase_check_version_change
 
-        if [[ "$SKIP_ENV_CHECK" -eq 1 ]]; then
+        if [[ "${SKIP_ENV_CHECK}" -eq 1 ]]; then
             record_phase "Environment prep" "SKIPPED"
         elif phase_env_check; then
             record_phase "Environment prep" "OK"
@@ -266,7 +274,7 @@ run_stages() {
         # No ansible/testbed files are generated here (stage 3 does that, just before
         # they are needed); the containerlab topology is part of the deploy itself.
         if phase_deploy_services; then
-            if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+            if [[ "${CFG_TC_MODE}" == "virtual" ]]; then
                 record_phase "Service deployment" "OK" "labserver=${CFG_LABSERVER_MODE} otg=${CFG_OTG_MODE} clab(${CFG_DUT_MODE})"
             else
                 record_phase "Service deployment" "OK" "labserver=${CFG_LABSERVER_MODE} otg=${CFG_OTG_MODE} (deployment.target=physical, no clab)"
@@ -277,27 +285,36 @@ run_stages() {
             # Cleared unconditionally (not just on success, and regardless of
             # target) so a failed deploy-mg right after this can't leave a stale
             # DEPLOY_MG_DONE=1 from an earlier run in place.
-            state_set "$STATE_FILE" DEPLOY_MG_DONE 0
+            state_set "${STATE_FILE}" DEPLOY_MG_DONE 0
         else
             record_phase "Service deployment" "FAILED"; phase_report; exit 1
         fi
     fi
 
-    if [[ "$MODE" == "deploy-only" ]]; then
+    if [[ "${MODE}" == "deploy-only" ]]; then
         log_ok "Environment deployed (--deploy-only) - skipping access check, gen-config, deploy-mg, pretest/smoke test/cleanup."
         warn_labserver_unlicensed
         phase_report
-        exit $?
+        deploy_rc=$?
+        # Last thing on stdout, so it is not scrolled away by the summary.
+        if [[ ${deploy_rc} -eq 0 ]]; then
+            log_info "Next step: run --access-check to verify connectivity."
+            log_detail "Before that, if the DUT / STC chassis are physical (deployment.target: physical) or the Labserver / OTG service is provisioned, set their addresses in config.yaml:"
+            log_detail "- testbed.endpoints (stc_chassis_ip, labserver_ip, otg_service)"
+            log_detail "- testbed.dut (mgmt_ip, credentials)"
+            log_detail "A virtual lab deploys its own DUT and chassis, so nothing is needed."
+        fi
+        exit "${deploy_rc}"
     fi
 
     # ------------------------------------------------- stage 2: access check ---
     # Every post-deploy mode assumes the environment is already deployed and never
     # touches infrastructure itself; "full" has just deployed it.
-    [[ "$MODE" == "full" ]] || require_deployed_environment
+    [[ "${MODE}" == "full" ]] || require_deployed_environment
 
     run_access_step
 
-    if [[ "$MODE" == "access-check" ]]; then
+    if [[ "${MODE}" == "access-check" ]]; then
         phase_report
         exit $?
     fi
@@ -313,34 +330,36 @@ run_stages() {
     # been recorded as done since the environment was last (re)deployed or destroyed.
     # A physical DUT under "auto" is never pushed to automatically.
     NEED_DEPLOY_MG=0
-    case "$MODE" in
+    case "${MODE}" in
         deploy-mg) NEED_DEPLOY_MG=1 ;;
         full|test-only)
-            [[ "$CFG_DEPLOY_MINIGRAPH_EFFECTIVE" == "1" ]] && NEED_DEPLOY_MG=1 ;;
+            [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && NEED_DEPLOY_MG=1 ;;
         pretest|smoke-test)
-            if [[ "$CFG_DEPLOY_MINIGRAPH_EFFECTIVE" == "1" ]] && ! state_owns "$STATE_FILE" DEPLOY_MG_DONE; then
+            if [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && ! state_owns "${STATE_FILE}" DEPLOY_MG_DONE; then
                 NEED_DEPLOY_MG=1
             fi ;;
+        *) ;;  # other modes never push a minigraph implicitly
     esac
 
-    if [[ "$NEED_DEPLOY_MG" -eq 1 ]]; then
+    if [[ "${NEED_DEPLOY_MG}" -eq 1 ]]; then
         if phase_deploy_mg; then
-            record_phase "deploy-mg" "$RESULT_DEPLOY_MG"
-            state_set "$STATE_FILE" DEPLOY_MG_DONE 1
+            record_phase "deploy-mg" "${RESULT_DEPLOY_MG}"
+            state_set "${STATE_FILE}" DEPLOY_MG_DONE 1
         else
-            record_phase "deploy-mg" "$RESULT_DEPLOY_MG"
+            record_phase "deploy-mg" "${RESULT_DEPLOY_MG}"
             cleanup_env_on_failure
             phase_report; exit 1
         fi
-    elif [[ "$CFG_DEPLOY_MINIGRAPH_EFFECTIVE" != "1" ]]; then
-        log_ok "testbed.deploy_minigraph resolves to false (${CFG_DEPLOY_MINIGRAPH:-auto}, target ${CFG_TARGET}) - no minigraph pushed; the DUT's configuration is left as it is (use --deploy-mg to push explicitly)"
+    elif [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" != "1" ]]; then
+        log_ok "testbed.deploy_minigraph resolves to false (${CFG_DEPLOY_MINIGRAPH:-auto}, target ${CFG_TARGET}) - no minigraph pushed."
+        log_detail "The DUT's configuration is left as it is. Use --deploy-mg to push explicitly."
         record_phase "deploy-mg" "SKIPPED" "deploy_minigraph=${CFG_DEPLOY_MINIGRAPH:-auto} on ${CFG_TARGET}"
     else
         log_ok "deploy-mg already done since the environment was last (re)deployed - skipping (use --deploy-mg to force a rerun)"
         record_phase "deploy-mg" "SKIPPED" "already done"
     fi
 
-    if [[ "$MODE" == "deploy-mg" ]]; then
+    if [[ "${MODE}" == "deploy-mg" ]]; then
         phase_report
         exit $?
     fi
@@ -348,22 +367,22 @@ run_stages() {
     # -------------------------------------------------------- stage 5: tests --
     local overall_rc=0
 
-    if [[ "$MODE" == "smoke-test" ]]; then
+    if [[ "${MODE}" == "smoke-test" ]]; then
         record_phase "Pretest" "SKIPPED" "not requested"
     elif phase_pretest; then
-        record_phase "Pretest" "$RESULT_PRETEST" "$SUMMARY_PRETEST"
+        record_phase "Pretest" "${RESULT_PRETEST}" "${SUMMARY_PRETEST}"
     else
-        record_phase "Pretest" "$RESULT_PRETEST" "$SUMMARY_PRETEST"
+        record_phase "Pretest" "${RESULT_PRETEST}" "${SUMMARY_PRETEST}"
         overall_rc=1
     fi
 
-    if [[ "$MODE" == "pretest" ]]; then
+    if [[ "${MODE}" == "pretest" ]]; then
         record_phase "Snappi smoke test" "SKIPPED" "not requested"
-    elif [[ $overall_rc -eq 0 ]]; then
+    elif [[ ${overall_rc} -eq 0 ]]; then
         if phase_smoke_test; then
-            record_phase "Snappi smoke test" "$RESULT_SMOKE" "$SUMMARY_SMOKE"
+            record_phase "Snappi smoke test" "${RESULT_SMOKE}" "${SUMMARY_SMOKE}"
         else
-            record_phase "Snappi smoke test" "$RESULT_SMOKE" "$SUMMARY_SMOKE"
+            record_phase "Snappi smoke test" "${RESULT_SMOKE}" "${SUMMARY_SMOKE}"
             overall_rc=1
         fi
     else
@@ -371,13 +390,13 @@ run_stages() {
     fi
 
     # ----------------------------------------------------------------- cleanup --
-    if [[ $overall_rc -ne 0 ]]; then
+    if [[ ${overall_rc} -ne 0 ]]; then
         cleanup_env_on_failure
     fi
 
-    if [[ "$NO_CLEANUP" -eq 1 ]]; then
+    if [[ "${NO_CLEANUP}" -eq 1 ]]; then
         record_phase "Cache cleanup" "SKIPPED" "--no-cleanup"
-    elif [[ $overall_rc -ne 0 && "${CFG_CLEANUP_ENV_ON_FAILURE:-0}" == "1" ]]; then
+    elif [[ ${overall_rc} -ne 0 && "${CFG_CLEANUP_ENV_ON_FAILURE:-0}" == "1" ]]; then
         record_phase "Cache cleanup" "SKIPPED" "environment torn down"
     else
         phase_cleanup_cache
@@ -396,7 +415,7 @@ fi
 
 load_config
 
-if [[ "$MODE" == "validate" ]]; then
+if [[ "${MODE}" == "validate" ]]; then
     log_ok "config.yaml is valid for every stage (deployment: and testbed:)"
     exit 0
 fi
@@ -404,20 +423,12 @@ fi
 check_license_server
 check_labserver_licensed
 
-if [[ "$MODE" == "show-config" ]]; then
+if [[ "${MODE}" == "show-config" ]]; then
     print_run_config
-    # A legacy flat file is migrated in memory on every run (with a deprecation warning);
-    # print the migrated layout so it can be copied into config.yaml.
-    if [[ "${CFG_CONFIG_LEGACY:-0}" == "1" ]]; then
-        echo
-        echo "================ MIGRATED LAYOUT (copy into config.yaml) ================"
-        python3 "$LIB_DIR/config_loader.py" "$CONFIG_FILE" --print-migrated 2>/dev/null
-        echo "========================================================================="
-    fi
     exit 0
 fi
 
-if [[ "$MODE" == "list-versions" ]]; then
+if [[ "${MODE}" == "list-versions" ]]; then
     phase_list_versions
     exit 0
 fi
@@ -432,19 +443,19 @@ if mode_needs_docker; then
     fi
 fi
 
-LOG_DIR="$LOG_BASE_DIR/$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$LOG_DIR"
-RUN_LOG="$LOG_DIR/run.log"
+LOG_DIR="${LOG_BASE_DIR}/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "${LOG_DIR}"
+RUN_LOG="${LOG_DIR}/run.log"
 
-state_file_init "$STATE_FILE"
-acquire_lock "$LOCK_FILE"
+state_file_init "${STATE_FILE}"
+acquire_lock "${LOCK_FILE}"
 _on_exit() {
     release_lock
-    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
-    [[ -n "${DOCKER_SHIM_DIR:-}" ]] && rm -rf "$DOCKER_SHIM_DIR"
+    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "${SUDO_KEEPALIVE_PID}" 2>/dev/null
+    [[ -n "${DOCKER_SHIM_DIR:-}" ]] && rm -rf "${DOCKER_SHIM_DIR}"
 }
 trap _on_exit EXIT
 
-log_info "run_snappi_test.sh starting - mode=$MODE config=$CONFIG_FILE log_dir=$LOG_DIR"
+log_info "run_snappi_test.sh starting - mode=${MODE} config=${CONFIG_FILE} log_dir=${LOG_DIR}"
 
 run_stages

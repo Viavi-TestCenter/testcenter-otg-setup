@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312  # pipelines/command substitutions in tests and log helpers are best-effort; failures are handled by callers
 # test_skip_env_check.sh - regression test for a defect the live test found.
 #
 # $SUDO used to be assigned only inside phase_env_check. With --skip-env-check that phase never runs,
@@ -8,7 +9,7 @@
 #   bash container/tests/test_skip_env_check.sh
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTAINER="$HERE/.."
+CONTAINER="${HERE}/.."
 fails=0
 
 check() {
@@ -16,15 +17,15 @@ check() {
 }
 
 # 1. The libraries alone: sourcing common.sh defines SUDO.
-out="$(bash -c 'set -u; source "$1/lib/common.sh"; printf "SUDO=[%s]" "$SUDO"' _ "$CONTAINER" 2>&1)"
-check "common.sh defines SUDO (no env check involved)" "$([[ "$out" == SUDO=\[* ]] && echo 1 || echo 0)" "$out"
+out="$(bash -c 'set -u; source "$1/lib/common.sh"; printf "SUDO=[%s]" "$SUDO"' _ "${CONTAINER}" 2>&1)"
+check "common.sh defines SUDO (no env check involved)" "$([[ "${out}" == SUDO=\[* ]] && echo 1 || echo 0)" "${out}"
 
 # 2. The real entry point (no phase has run): SUDO is defined and has the right value for this user.
-out="$(SNAPPI_SOURCE_ONLY=1 bash -c 'set -u; dir="$1"; set --; source "$dir/run_snappi_test.sh"; printf "SUDO=[%s]" "$SUDO"' _ "$CONTAINER" 2>&1)"
-check "run_snappi_test.sh leaves SUDO defined before any phase" "$([[ "$out" == SUDO=\[* ]] && echo 1 || echo 0)" "$out"
+out="$(SNAPPI_SOURCE_ONLY=1 bash -c 'set -u; dir="$1"; set --; source "$dir/run_snappi_test.sh"; printf "SUDO=[%s]" "$SUDO"' _ "${CONTAINER}" 2>&1)"
+check "run_snappi_test.sh leaves SUDO defined before any phase" "$([[ "${out}" == SUDO=\[* ]] && echo 1 || echo 0)" "${out}"
 
 want=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && want="sudo"
-check "SUDO is '${want}' for this user (empty when root or without sudo)" "$([[ "$out" == "SUDO=[$want]" ]] && echo 1 || echo 0)" "$out"
+check "SUDO is '${want}' for this user (empty when root or without sudo)" "$([[ "${out}" == "SUDO=[${want}]" ]] && echo 1 || echo 0)" "${out}"
 
 echo
-if [[ "$fails" -eq 0 ]]; then echo "ALL PASSED"; else echo "$fails FAILED"; exit 1; fi
+if [[ "${fails}" -eq 0 ]]; then echo "ALL PASSED"; else echo "${fails} FAILED"; exit 1; fi

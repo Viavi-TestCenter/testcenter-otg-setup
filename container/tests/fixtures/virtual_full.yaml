@@ -1,4 +1,4 @@
-# New-layout twin of legacy_main.yaml (same lab, same values). Test fixture.
+# Full virtual-lab fixture (every section). Test fixture.
 deployment:
   target: virtual
   images:

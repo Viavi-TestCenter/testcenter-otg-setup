@@ -2,10 +2,13 @@
 # run_snappi_test.sh configuration
 #
 #   deployment:  WHAT THE TOOL STANDS UP (images, STC/DUT/Labserver/OTG/
-#                sonic-mgmt, report server, cleanup, logging)          -> README §3
+#                sonic-mgmt, report server, cleanup, logging)          -> guide §3
 #   testbed:     HOW THE LAB LOOKS TO sonic-mgmt AND THE TESTS (external
 #                equipment's addresses, DUT, cabling, credentials,
-#                testbed/topology definition)                          -> README §4
+#                testbed/topology definition)                          -> guide §4
+#
+#   ("guide" = ../README.md, the Snappi Environment Setup and Quick Test Guide;
+#    how to use this tool: README.md in this folder)
 #
 # INTENDED USE
 #   This tool is designed exclusively for fixed pre-test and smoke testing of a
@@ -23,7 +26,7 @@
 # TARGETS
 #   deployment.target: virtual is the validated lab (community SONiC only) and is
 #   recommended. deployment.target: physical runs the same pretest and smoke test
-#   against your OWN physical DUT and STC chassis (see the README examples); this has
+#   against your OWN physical DUT and STC chassis (see README.md section 4); this has
 #   NOT been validated: results depend on your DUT configuration, cabling and VLAN
 #   setup. For a physical DUT the tool never configures the DUT unless you ask it to
 #   (see the WARNING below).
@@ -86,7 +89,7 @@ deployment:
                                   #                    detection logs a warning asking for this key.
                                   # NOT used for a provisioned Labserver/OTG service: their addresses are in
                                   # testbed.endpoints.*.
-    docker_compose:               # ONE switch for the combined stack (README §3.5)
+    docker_compose:               # ONE switch for the combined stack (guide §3.5)
       enabled: true               # true : deploy Labserver AND OTG service together on THIS host via VIAVI's
                                   #        testcenter-otg-setup docker-compose stack (it uses the checkout this
                                   #        container solution itself ships inside, one directory up from
@@ -224,7 +227,7 @@ deployment:
                                   # resource is still removed. Has no effect on a user-supplied checkout
                                   # (source_dir set), which is never deleted by this tool regardless.
 
-  allure:                         # report server (README §3.6)
+  allure:                         # report server (guide §3.6)
     enabled: false                # opt-in only; not deployed unless explicitly set to true. Set true to
                                   # deploy the report server and publish test results to it
                                   # (testbed.reporting.allure_project_id is only used then).
@@ -299,8 +302,6 @@ testbed:
         stc_port: Card1/Port2
         bandwidth: 40000
         vlan_id: 1000
-                                  # (the old per-link host_interface key is dropped: deprecated and unused; the
-                                  #  legacy mapper accepts it and logs a warning)
 
   otg:
     credentials: { user: admin, password: admin }
