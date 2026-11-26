@@ -71,7 +71,7 @@ SCHEMA = {
             "labserver": {"mode": None},
             "otg_service": {"mode": None},
         },
-        "stc": {"version": None, "license_server": None, "mgmt_ip": None},
+        "stc": {"version": None, "license_server": None, "license_managed_externally": None, "mgmt_ip": None},
         "dut_vs": {
             "image": None, "image_archive": None, "build_sonic_vs": None, "download_source": None,
             "keep_dut_artifacts": None, "keep_dut_image": None, "hostname": None, "mgmt_ip": None,
@@ -476,9 +476,10 @@ def resolve(cfg, scope, rep):
     version = req(rep, cfg, "deployment.stc.version", str, nonempty=True) if needs_version else get(cfg, "deployment.stc.version", "")
     version = version if isinstance(version, str) else ""
     # license_server is needed when target is virtual or this tool deploys a Labserver, but WHETHER a
-    # given run needs a real value is a run-mode rule (traffic modes, --deploy-only), enforced in
-    # run_snappi_test.sh::check_license_server as before - not a schema rule, or it would block
-    # --destroy, --pretest, --access-check ... of a file that simply has none.
+    # given run needs a real value is a run-mode rule (a warning before the
+    # traffic modes, and after --deploy-only), raised in run_snappi_test.sh::check_license_server - never
+    # a schema rule or a stop, since the license may come from elsewhere (an Aion license, or a license
+    # server set up in the Labserver by hand).
     license_server = opt(rep, cfg, "deployment.stc.license_server", str, "")
     out["CFG_TC_VERSION"] = version
     # Labserver expects an exact match on the STC version (labserver-<version>.tar.xz); OTG service
@@ -486,6 +487,9 @@ def resolve(cfg, scope, rep):
     out["CFG_TC_LABSERVER_VERSION"] = version
     out["CFG_TC_OTGSERVICE_VERSION"] = ".".join(version.split(".")[:2]) if version else ""
     out["CFG_TC_LICENSE_SERVER"] = license_server
+    # An explicit "I license this lab another way" acknowledgement (Aion license, or a license server
+    # set up in the Labserver by hand): silences the missing-license-server warnings.
+    out["CFG_LICENSE_MANAGED_EXTERNALLY"] = flag(opt(rep, cfg, "deployment.stc.license_managed_externally", bool, False))
 
     # ---- this machine's address. A loopback address means "this host" only to a caller running on
     # this host's network; the sonic-mgmt container's gRPC client and otgctl need the real address.
@@ -813,7 +817,7 @@ def main():
         # Both layouts use deployment: and testbed:, so a mixed file cannot be interpreted.
         rep.err(
             f"legacy key(s) {', '.join(evidence)} cannot be mixed with the new layout (deployment.target is set). "
-            "Move every key to deployment:/testbed: (see the README key map) or remove deployment.target to keep "
+            "Move every key to deployment:/testbed: or remove deployment.target to keep "
             "the legacy layout."
         )
         values = {}

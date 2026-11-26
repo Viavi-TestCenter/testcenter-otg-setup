@@ -91,15 +91,49 @@ _phase_deploy_services_impl() {
 }
 
 # ---------------------------------------------------------------- labserver -
+# Virtual lab only: a tool-deployed Labserver that came up without a license server
+# (deployment.stc.license_server was empty or the placeholder) is recorded in the state
+# file as LABSERVER_UNLICENSED=1. A physical chassis has its own licensing path, so nothing
+# is recorded there. --deploy-only and the test stages that do not redeploy (--smoke-test,
+# --test-only) only warn about it (the license may come from elsewhere), and the next deploy
+# recreates the Labserver once a valid value is set.
+# Logged while deploying a Labserver with no usable license_server: a warning, or just a note when
+# deployment.stc.license_managed_externally acknowledges that the lab is licensed another way.
+_license_missing_note() {
+    if [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]]; then
+        log_info "deployment.stc.license_server is not set - the Labserver is deployed without a license server ($1); deployment.stc.license_managed_externally is true"
+    else
+        log_warn "deployment.stc.license_server is empty or the placeholder - the Labserver is deployed WITHOUT a license server ($1). Set it and redeploy before running tests."
+    fi
+}
+
+_record_labserver_license_state() {
+    if [[ "$CFG_TC_MODE" == "virtual" ]] && ! license_server_valid; then
+        state_set "$STATE_FILE" LABSERVER_UNLICENSED 1
+    else
+        state_set "$STATE_FILE" LABSERVER_UNLICENSED 0
+    fi
+}
+
+# True when the running tool-deployed Labserver must be recreated to pick up a license
+# server that is valid now but was not when it was deployed (virtual lab only).
+_labserver_needs_license_redeploy() {
+    [[ "$CFG_TC_MODE" == "virtual" ]] && license_server_valid && state_owns "$STATE_FILE" LABSERVER_UNLICENSED
+}
+
 _deploy_labserver() {
     if [[ "$CFG_LABSERVER_MODE" == "provisioned" ]]; then
         # Never deployed, never destroyed, and not contacted here: reachability of
         # a provisioned Labserver is checked by the access step (--access-check).
         log_info "Labserver is provisioned (${CFG_LABSERVER_IP:-address in testbed.endpoints.labserver_ip}) - not deployed by this tool; its reachability is checked by --access-check"
+        state_set "$STATE_FILE" LABSERVER_UNLICENSED 0
         return
     fi
 
-    if docker ps --format '{{.Names}}' | grep -qx labserver; then
+    if _labserver_needs_license_redeploy && docker ps -a --format '{{.Names}}' | grep -qx labserver; then
+        log_info "The labserver was deployed without a license server and deployment.stc.license_server is now set - recreating it"
+        docker rm -f labserver >/dev/null
+    elif docker ps --format '{{.Names}}' | grep -qx labserver; then
         local code; code=$(http_code "http://${CFG_LABSERVER_IP}/stcapi/sessions")
         if [[ "$code" != "000" ]]; then
             _warn_if_labserver_version_mismatch
@@ -140,12 +174,18 @@ _deploy_labserver() {
         --net=host --log-opt max-size=10m --log-opt max-file=5 --shm-size=250m \
         "$image_name" >/dev/null
 
-    log_info "Configuring license (${CFG_TC_LICENSE_SERVER}) and waiting for supervisor..."
-    docker exec labserver sed -i \
-        "s|environment=HOME=\"/home/testcenter\",CURLOPT_CAINFO=\"/etc/ssl/certs/ca-certificates.crt\"|environment=HOME=\"/home/testcenter\",CURLOPT_CAINFO=\"/etc/ssl/certs/ca-certificates.crt\",SPIRENTD_LICENSE_FILE=\"${CFG_TC_LICENSE_SERVER}\"|" \
-        /etc/supervisor/conf.d/labserver.conf
-    docker exec labserver grep -q SPIRENTD_LICENSE_FILE /etc/supervisor/conf.d/labserver.conf \
-        || die "Failed to write license config into labserver.conf"
+    if license_server_valid; then
+        log_info "Configuring license (${CFG_TC_LICENSE_SERVER}) and waiting for supervisor..."
+        docker exec labserver sed -i \
+            "s|environment=HOME=\"/home/testcenter\",CURLOPT_CAINFO=\"/etc/ssl/certs/ca-certificates.crt\"|environment=HOME=\"/home/testcenter\",CURLOPT_CAINFO=\"/etc/ssl/certs/ca-certificates.crt\",SPIRENTD_LICENSE_FILE=\"${CFG_TC_LICENSE_SERVER}\"|" \
+            /etc/supervisor/conf.d/labserver.conf
+        docker exec labserver grep -q SPIRENTD_LICENSE_FILE /etc/supervisor/conf.d/labserver.conf \
+            || die "Failed to write license config into labserver.conf"
+    else
+        _license_missing_note "no SPIRENTD_LICENSE_FILE written"
+        log_info "Waiting for labserver supervisor..."
+    fi
+    _record_labserver_license_state
 
     local i=0
     until docker exec labserver supervisorctl status >/dev/null 2>&1; do
@@ -259,7 +299,9 @@ _deploy_otg_service() {
 _deploy_docker_compose_stack() {
     _preflight_check_compose_conflicts
 
-    if _docker_compose_stack_healthy; then
+    if _labserver_needs_license_redeploy && docker_compose_stack_up; then
+        log_info "The labserver was deployed without a license server and deployment.stc.license_server is now set - recreating the docker-compose stack"
+    elif _docker_compose_stack_healthy; then
         log_ok "Reusing already-running docker-compose labserver+OTG stack (project=$COMPOSE_PROJECT)"
         return
     fi
@@ -285,11 +327,18 @@ _deploy_docker_compose_stack() {
 
     # .env keys match VIAVI's testcenter-otg-setup convention exactly (guide §3.5
     # step 3) - LICENSE_SERVER/LABSERVER/otg_build are read by otg-compose.yaml.
+    local compose_license=""
+    if license_server_valid; then
+        compose_license="$CFG_TC_LICENSE_SERVER"
+    else
+        _license_missing_note "LICENSE_SERVER left blank"
+    fi
     cat > "$COMPOSE_DIR/.env" <<EOF
-LICENSE_SERVER=${CFG_TC_LICENSE_SERVER}
+LICENSE_SERVER=${compose_license}
 LABSERVER=${CFG_LABSERVER_IP}
 otg_build=$(basename "$OTGSERVICE_FILE")
 EOF
+    _record_labserver_license_state
 
     # A small override file (rather than editing the vendored otg-compose.yaml
     # in place) pins the labserver image to an exact version tag - keeps this
@@ -405,7 +454,7 @@ _ensure_otg_source_dir() {
     local dir="$1"
     local f
     for f in otg-compose.yaml Dockerfile entrypoint.sh; do
-        [[ -f "$dir/$f" ]] || die "OTG source directory $dir is missing expected file '$f' - this integration expects the testcenter-otg-setup layout documented in guide §3.5."
+        [[ -f "$dir/$f" ]] || die "OTG source directory $dir is missing expected file '$f' - this integration expects the testcenter-otg-setup layout."
     done
     grep -q '^\s*labserver:' "$dir/otg-compose.yaml" || die "otg-compose.yaml under $dir does not define a 'labserver' service as expected - the testcenter-otg-setup layout may have changed."
     grep -q '^\s*otg:' "$dir/otg-compose.yaml" || die "otg-compose.yaml under $dir does not define an 'otg' service as expected - the testcenter-otg-setup layout may have changed."
@@ -707,6 +756,7 @@ phase_destroy() {
     # down - a later --pretest/--smoke-test must not skip deploy-mg based on
     # a stale "done" flag from before this teardown.
     state_set "$STATE_FILE" DEPLOY_MG_DONE 0
+    state_set "$STATE_FILE" LABSERVER_UNLICENSED 0
 
     if state_owns "$STATE_FILE" OWN_CLAB; then
         log_info "Destroying containerlab topology"

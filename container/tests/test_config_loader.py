@@ -522,6 +522,15 @@ class LinkCountAndAllure(unittest.TestCase):
         self.assertEqual(r.rc, 1)
         self.assertIn("link_count", r.stderr)
 
+    def test_license_managed_externally_defaults_off_and_is_a_bool(self):
+        self.assertEqual(run("virtual_full.yaml").vars["CFG_LICENSE_MANAGED_EXTERNALLY"], "0")
+        cfg = mutated("virtual_full.yaml", lambda c: c["deployment"]["stc"].update(license_managed_externally=True))
+        self.assertEqual(run(cfg).vars["CFG_LICENSE_MANAGED_EXTERNALLY"], "1")
+        cfg = mutated("virtual_full.yaml", lambda c: c["deployment"]["stc"].update(license_managed_externally="yes"))
+        r = run(cfg)
+        self.assertEqual(r.rc, 1)
+        self.assertIn("license_managed_externally", r.stderr)
+
     def test_allure_is_off_by_default(self):
         cfg = mutated("virtual_full.yaml", lambda c: c["deployment"].update(allure={}))
         self.assertEqual(run(cfg).vars["CFG_ALLURE_ENABLED"], "0")

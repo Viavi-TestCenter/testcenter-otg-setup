@@ -29,7 +29,7 @@ _gen_testbed_config() {
 # of the deploy stage). Contacts no external component. Generated files are
 # overwritten on every run; do not hand-edit them.
 phase_gen_config() {
-    log_step "Generating testbed configuration (README §4.1-4.7, excl. §4.8 patch)"
+    log_step "Generating testbed configuration"
 
     local ansible_dir="$SONIC_MGMT_DIR/ansible"
     [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"

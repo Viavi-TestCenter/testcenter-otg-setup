@@ -134,20 +134,30 @@ deployment:
                                   # the OTG service only needs its leading major.minor to match (the "5.62" ->
                                   # otgservice.5.62.*.sh, e.g. otgservice.5.62.0009-20260112080331.sh), since its
                                   # patch/build numbering doesn't track STC's.
-    license_server: "@license-server.example.com"   # REQUIRED when deployment.target is virtual, AND when this
-                                                    # tool deploys the Labserver (compose or standalone), even
-                                                    # with target: physical. It is written into the deployed
-                                                    # Labserver's SPIRENTD_LICENSE_FILE. Examples:
+    license_server: "@license-server.example.com"   # OPTIONAL. The STC license server for a virtual chassis,
+                                                    # and the one written into a Labserver this tool deploys
+                                                    # (compose or standalone) as SPIRENTD_LICENSE_FILE.
+                                                    # Empty or this placeholder only gives a WARNING (after
+                                                    # --deploy-only, and before the test cases of the full run,
+                                                    # --test-only and --smoke-test on a virtual lab): your
+                                                    # license may come from elsewhere (an Aion license, or a
+                                                    # license server you set up in the Labserver yourself).
+                                                    # With no valid value, no license is written into a
+                                                    # deployed Labserver. Examples:
                                                     #   @license-server.company.com
                                                     #   @10.10.10.10
                                                     #   license-server.company.com:7443
-                                                    # Not used (and not validated) only when the tool deploys
-                                                    # neither a virtual chassis nor a Labserver: the physical
-                                                    # chassis and a provisioned Labserver have their own
-                                                    # licensing path.
+                                                    # Not used when the tool deploys neither a virtual chassis
+                                                    # nor a Labserver: the physical chassis and a provisioned
+                                                    # Labserver have their own licensing path.
                                                     #
                                                     # For licensing assistance:
                                                     # https://www.viavisolutions.com/support
+    # license_managed_externally: true   # OPTIONAL, default false. Set it when the lab is licensed another way (an
+                                         # Aion license, or a license server you configured in the Labserver yourself)
+                                         # and you leave license_server empty: it silences the missing-license-server
+                                         # warnings. It changes nothing else (no license is written into a deployed
+                                         # Labserver without a valid license_server).
     mgmt_ip: "192.168.1.2"        # virtual target only. Chassis container mgmt IP - set statically on the containerlab
                                   # node (not auto-assigned); must be inside 192.168.1.0/24, default is fine.
                                   # (physical: the chassis address is testbed.endpoints.stc_chassis_ip, REQUIRED from --access-check)
@@ -185,9 +195,6 @@ deployment:
                                   # auto-assigned); must be inside 192.168.1.0/24, default is fine
     hwsku: "Force10-S6000"        # passed to the container as HWSKU
     credentials: { user: admin, password: admin }   # passed as USERNAME / PASSWORD
-    link_count: 2                 # OPTIONAL. veth pairs to the chassis. Omitted: len(testbed.dut.links) when the testbed
-                                  # section is present, else 2. Set and different from len(testbed.dut.links):
-                                  # error at the first stage that reads testbed:. Prefer omitting it.
 
   sonic_mgmt:
     source_dir: ""                # empty => clone fresh under .run_snappi_test/sonic-mgmt next to this config;

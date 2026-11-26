@@ -22,6 +22,15 @@ log_warn() { _log "${C_YLW}[WARN ]${C_RST} $*" >&2; }
 log_err()  { _log "${C_RED}[ERROR]${C_RST} $*" >&2; }
 log_step() { _log ""; _log "${C_BLD}${C_BLU}==> $*${C_RST}"; }
 
+# True when deployment.stc.license_server holds a usable value: not empty and not the shipped
+# placeholder. Used by the run-mode check and by the Labserver deploy, which writes no license
+# configuration for an unusable value.
+license_server_valid() {
+    local v
+    v="$(printf '%s' "${CFG_TC_LICENSE_SERVER:-}" | xargs)"
+    [[ -n "$v" && "$v" != "@license-server.example.com" ]]
+}
+
 die() { log_err "$*"; exit 1; }
 
 # Redact known secret values out of a string before it is logged anywhere.

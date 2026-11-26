@@ -234,7 +234,7 @@ phase_check_artifacts() {
 # actually publishes a sonic-vs.img.gz build for (master and recent releases;
 # see the die message below if a given tag has none).
 _build_sonic_vs_image() {
-    log_step "deployment.dut_vs.image (${CFG_DUT_IMAGE}) not found locally - building it per guide §3.3 (deployment.dut_vs.build_sonic_vs=true)"
+    log_step "deployment.dut_vs.image (${CFG_DUT_IMAGE}) not found locally - building it (deployment.dut_vs.build_sonic_vs=true)"
     local log="$LOG_DIR/sonic_vs_build.log"
     run_phase_with_spinner "Building sonic-vs image" "$log" _build_sonic_vs_image_impl \
         || die "Building ${CFG_DUT_IMAGE} failed - see $log"

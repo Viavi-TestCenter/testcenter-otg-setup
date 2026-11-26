@@ -254,28 +254,34 @@ configured version, remove it yourself first (`docker rm -f labserver`, or
 `deployment.stc.version` itself, which [§7.0](#70-version-change-check-libdeployshphase_check_version_change)'s
 version-change check will do for you automatically by default.
 
-**License server (`deployment.stc.license_server`):** required whenever
-`deployment.target: virtual` (to run real traffic through the containerized STC
-chassis/Labserver stack) **and** whenever this tool deploys the Labserver, even
-with `deployment.target: physical` (it is written into the deployed Labserver's
-`SPIRENTD_LICENSE_FILE`) — a network license server or a local Spirent license
+**License server (`deployment.stc.license_server`):** the STC license server for a
+virtual (containerized) STC chassis, and the one written into a Labserver this tool
+deploys (`SPIRENTD_LICENSE_FILE`) — a network license server or a local Spirent license
 manager for a hardware dongle, format `@hostname` or `host:port`. Contact
-[VIAVI support](https://www.viavisolutions.com/support) if you don't have one.
-A physical chassis and a provisioned (already existing) Labserver have their
-own licensing path, so the field is not used or validated at all when this tool
-deploys neither a virtual chassis nor a Labserver. Two checks apply:
+[VIAVI support](https://www.viavisolutions.com/support) if you don't have one. A
+physical chassis and a provisioned (already existing) Labserver have their own
+licensing path, so the field is not used there.
 
-- The config loader requires a **non-empty** value in every mode whenever the
-  field is needed as described above (an empty value is rejected even by
-  `--destroy` or `--show-config`).
-- `run_snappi_test.sh` itself (a run-mode rule, not a schema rule) additionally
-  rejects the placeholder `@license-server.example.com` in the runs that can use
-  the license: with `deployment.target: virtual`, the full run, `--test-only` and
-  `--smoke-test` (every mode that can reach the Snappi smoke test through the
-  virtual chassis); when this tool deploys the Labserver, the full run and
-  `--deploy-only`. `--pretest`, `--access-check`, `--gen-config`, `--deploy-mg`,
-  `--validate`, `--destroy`, `--show-config` and `--list-versions` accept the
-  placeholder (see the Mode → stages matrix in [§5](#5-command-line-usage)).
+The value is never required and never stops a run: your license may come from
+somewhere this tool cannot see (an Aion license, or a license server you configured
+in the Labserver yourself). When it is empty or still the placeholder
+`@license-server.example.com`, the tool only warns:
+
+- `--deploy-only` (virtual lab): deploys the Labserver without license configuration
+  and prints a warning at the end of the run.
+- The full run, `--test-only` and `--smoke-test` (virtual lab): print a warning
+  before the test cases start, and carry on. If the Labserver was deployed without a
+  license server and the value is set now, they warn that `--deploy-only` must be run
+  again to redeploy it with the license.
+- `--pretest`, `--access-check`, `--gen-config`, `--deploy-mg`, `--validate`,
+  `--destroy`, `--show-config` and `--list-versions` never check it (see the
+  Mode → stages matrix in [§5](#5-command-line-usage)).
+
+If you license the lab another way on purpose, set
+`deployment.stc.license_managed_externally: true` (optional, default `false`) to
+acknowledge it: all of the warnings above are then silenced. It changes nothing
+else — a Labserver this tool deploys still gets no license written into it unless
+`license_server` holds a valid value.
 
 **Virtual DUT:** if `deployment.target: virtual`, either have the
 `sonic-vs` image already tagged in `docker images`, or place a
@@ -323,7 +329,7 @@ cd container
 #    (deployment.target: virtual, everything deployed on this host), so the
 #    minimum is:
 #      deployment.stc.version         the STC version your artifacts are for (§2/§6)
-#      deployment.stc.license_server  required to reach the Snappi smoke test (§2/§6)
+#      deployment.stc.license_server  your STC license server (§2/§6); a missing one only warns
 #    For a physical DUT and STC chassis, see "Physical DUT and STC chassis" below.
 #
 #    Optional - Allure report page: deployment.allure.enabled is false by
@@ -376,8 +382,8 @@ ends with a `SNAPPI TEST SUMMARY` block and `RESULT: PASS` (or `FAIL`) — see
   (`--deploy-only`: `deployment:`; `--access-check`: also `testbed.endpoints.*` and,
   for a physical DUT, `testbed.dut.mgmt_ip` / `.credentials`; every later stage: all of
   `testbed:`), so a file can pass `--deploy-only` or `--access-check` and still fail
-  `--gen-config`; `--validate` finds that up front. It does not apply the run-mode
-  license-placeholder rule (§2).
+  `--gen-config`; `--validate` finds that up front. It does not run the
+  license-server warning (§2).
 - **`--show-config`** loads the file and prints the resolved run configuration, then
   exits (read-only: no lock, no log directory, no phase runs). A mis-placed address —
   the usual mistake when switching a lab between virtual and physical — shows up
@@ -522,8 +528,8 @@ testbed:                                               # not read by --deploy-on
 Use `docker_compose.enabled: false` with both modes `standalone` instead if you want the
 two as separate containers. The Labserver on this host must be able to reach the
 physical chassis at `stc_chassis_ip`. Replace the placeholder values (the license server,
-which `--deploy-only` rejects while it is still `@license-server.example.com` because
-this tool deploys the Labserver, and the `10.0.0.x` addresses) with your own.
+which is only warned about while it is still `@license-server.example.com`, and the
+`10.0.0.x` addresses) with your own.
 
 **What `--access-check` needs and does.** It needs the chassis address, the DUT address
 and the DUT login, in a `testbed:` section, and nothing else from `testbed:` (the minimal
@@ -890,7 +896,8 @@ STC software version and license. **Not** virtual-only (see the per-key notes).
 | Field | Meaning |
 |---|---|
 | `version` | REQUIRED when `target: virtual` (selects the STC chassis image) **and** whenever this tool deploys the Labserver or OTG service, even with `target: physical`: the Labserver image (`labserver-<version>.tar.xz`) and the OTG installer (matching major.minor) are derived from it. For a physical chassis it must equal the software version installed on that chassis; the user or lab owner keeps it correct — the tool does not check it against the chassis or the Labserver (see [Version validation](#version-validation)). Virtual chassis: expects `stc_<version>.tgz`, or `Spirent_TestCenter_Docker_<version>.zip` containing it (either is accepted under `deployment.images.dir`; the zip is auto-extracted on first use). Labserver and OTG service versions are derived from this, not configured separately: see [§2](#2-prerequisites). |
-| `license_server` | REQUIRED when `target: virtual` **and** when this tool deploys the Labserver (compose or standalone), even with `target: physical`. Written into the deployed Labserver as `SPIRENTD_LICENSE_FILE`. Formats: `@license-server.company.com`, `@10.10.10.10`, or `license-server.company.com:7443`. Not used (and not validated) when the tool deploys neither a virtual chassis nor a Labserver: the physical chassis and a provisioned Labserver have their own licensing path. Which runs reject the placeholder `@license-server.example.com`: see [§2](#2-prerequisites). For licensing assistance, contact [VIAVI support](https://www.viavisolutions.com/support). |
+| `license_server` | OPTIONAL. The license server for a virtual chassis, written into a Labserver this tool deploys (compose or standalone) as `SPIRENTD_LICENSE_FILE`. Formats: `@license-server.company.com`, `@10.10.10.10`, or `license-server.company.com:7443`. Empty or the placeholder `@license-server.example.com` only produces a warning (after `--deploy-only`, and before the test cases of the full run, `--test-only` and `--smoke-test` on a virtual lab), because the license may come from elsewhere, such as an Aion license or a license server configured in the Labserver by hand; in that case no license is written into a deployed Labserver. The physical chassis and a provisioned Labserver have their own licensing path. Silence the warnings with `deployment.stc.license_managed_externally: true` (below). Details: [§2](#2-prerequisites). For licensing assistance, contact [VIAVI support](https://www.viavisolutions.com/support). |
+| `license_managed_externally` | OPTIONAL, default `false`. Set to `true` when the lab is licensed another way (an Aion license, or a license server configured in the Labserver by hand) and `license_server` is left empty: it silences the missing-license-server warnings. Changes nothing else; no license is written into a deployed Labserver without a valid `license_server`. |
 | `mgmt_ip` | `virtual` target only (REQUIRED then). STC chassis container's management IP — set statically on the containerlab node (not auto-assigned by containerlab); must be inside the topology's `192.168.1.0/24` management subnet and distinct from `dut_vs.mgmt_ip`; the default is fine. (`physical`: the chassis address is `testbed.endpoints.stc_chassis_ip`.) |
 
 #### `deployment.dut_vs`
@@ -1091,7 +1098,7 @@ Combined with `target`:
 4. **Deployment-only keys are ignored and not validated.** `deployment.dut_vs.*` and
    `deployment.stc.mgmt_ip` are required only when `target: virtual`; `deployment.stc.version`
    when `target: virtual` or a Labserver/OTG service is deployed; `deployment.stc.license_server`
-   when `target: virtual` or a Labserver is deployed; `docker_compose.keep_build_image` only when
+   is used when `target: virtual` or a Labserver is deployed (and never required); `docker_compose.keep_build_image` only when
    `enabled: true`; `labserver.mode` / `otg_service.mode` only when `enabled: false`; `host_ip`
    only when at least one of the two is deployed. Unused but set keys log one "ignored" line
    instead of failing, so a config can be switched between modes without deleting blocks.

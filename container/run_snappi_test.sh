@@ -5,7 +5,7 @@
 # Usage:
 #   ./run_snappi_test.sh [-c config.yaml] [options]
 #
-# The run is split into stages (README §5). Deployment is separate from the
+# The run is split into stages. Deployment is separate from the
 # testbed configuration and from the minigraph push:
 #   1 deploy        --deploy-only    reads config.yaml's deployment: section only
 #   2 access check  --access-check   reachability + DUT login (+ key install on a physical DUT)
@@ -67,21 +67,6 @@
 #                          whether the configured deployment.stc.version is ready. Read-only -
 #                          no lock, no log dir, no phases run, nothing extracted/downloaded.
 #   -h, --help             Show this help and exit
-#
-# No flag runs stages 1, 2, 3, then the minigraph push (when testbed.deploy_minigraph resolves to
-# true: "auto" = virtual yes, physical never), then the pretest and smoke test.
-#
-# config.yaml's deployment.cleanup.env_on_failure (default: false) controls whether a FAILED
-# run (deploy-mg or pretest/smoke test) automatically tears down the tool-owned
-# environment afterward (same scope as --destroy). A successful run always keeps
-# the environment deployed for reuse regardless of this setting. Leave it false to
-# keep a failed environment around for debugging. Ignored by --deploy-only,
-# which always keeps the environment deployed regardless of outcome.
-#
-# --pretest/--smoke-test decide whether deploy-mg is still needed by checking
-# DEPLOY_MG_DONE in the per-run state file (.run_snappi_test/state.env) - set
-# whenever deploy-mg last succeeded, and cleared whenever the environment is
-# redeployed (containerlab always recreates the DUT) or torn down (--destroy).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,35 +123,59 @@ source "$LIB_DIR/report.sh"
 # shellcheck source=lib/versions.sh
 source "$LIB_DIR/versions.sh"
 
-# deployment.stc.license_server is needed when this run can deploy a Labserver
-# (it is written into the Labserver's SPIRENTD_LICENSE_FILE - full and
-# --deploy-only), or can run real traffic through a virtual (containerized)
-# STC chassis (full, --test-only, --smoke-test; see the Mode -> stages table in
-# README.md §5). --pretest explicitly skips the smoke test, and the other modes
-# never reach either, so they need no check. The value itself is a run-mode
-# business rule, not a schema one, so it is enforced here, not in the loader.
+# deployment.stc.license_server tells this tool which license server to write into a Labserver it
+# deploys, and which one a virtual (containerized) STC chassis uses. It is only advisory here: the
+# license may come from somewhere this tool cannot see (an Aion license, or a license server set
+# up by hand in the Labserver), so a missing value is a WARNING, never a stop. It is shown before
+# the test cases run (full, --test-only, --smoke-test) and after the deploy (--deploy-only, see
+# warn_labserver_unlicensed). deployment.stc.license_managed_externally: true acknowledges that the
+# lab is licensed another way and silences all of them. The value itself is a run-mode rule, not a schema one, so it is
+# checked here, not in the loader.
 check_license_server() {
     local reason=""
     if [[ "$CFG_TC_MODE" == "virtual" && ( "$MODE" == "full" || "$MODE" == "test-only" || "$MODE" == "smoke-test" ) ]]; then
         reason="this run sends real traffic through a virtual (containerized) STC chassis"
     fi
-    if [[ "$CFG_LABSERVER_MODE" != "provisioned" && ( "$MODE" == "full" || "$MODE" == "deploy-only" ) ]]; then
+    if [[ "$CFG_LABSERVER_MODE" != "provisioned" && "$MODE" == "full" ]]; then
         reason="this tool deploys the Labserver and writes the license server into it"
     fi
     [[ -n "$reason" ]] || return 0
+    license_server_valid && return 0
+    [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
 
-    local license_value
-    license_value="$(printf '%s' "$CFG_TC_LICENSE_SERVER" | xargs)"
-    if [[ -z "$license_value" || "$license_value" == "@license-server.example.com" ]]; then
-        die "Invalid configuration: 'deployment.stc.license_server'.
-
-The value cannot be empty and must not be the default placeholder '@license-server.example.com'. Configure a valid STC license server (for example, '@hostname' or 'host:port'). It is needed because ${reason}.
-
-If you use a Labserver that already exists, set deployment.otg_labserver.docker_compose.enabled: false and deployment.otg_labserver.labserver.mode: provisioned (its address goes in testbed.endpoints.labserver_ip): this tool then deploys no Labserver, and with a physical chassis (deployment.target: physical, which has its own separate licensing path) no license server is needed at all.
-
-For licensing assistance, contact VIAVI Support:
-https://www.viavisolutions.com/support"
+    if [[ "$CFG_LABSERVER_MODE" == "provisioned" ]]; then
+        log_warn "deployment.stc.license_server is empty or still the placeholder '@license-server.example.com'. The Labserver is provisioned (not deployed by this tool), so this value is not used; make sure that Labserver is licensed for the virtual chassis. You can ignore this if it already is."
+        return 0
     fi
+
+    log_warn "deployment.stc.license_server is empty or still the placeholder '@license-server.example.com'; ${reason}.
+         If the Labserver is licensed another way (an Aion license, or a license server you configured in the Labserver yourself) you can ignore this.
+         Otherwise set a valid license server (for example '@hostname' or 'host:port') and run --deploy-only again; the STC tests need a licensed Labserver."
+}
+
+# Virtual lab only. --smoke-test and --test-only do not redeploy, so they would run against a
+# Labserver that --deploy-only brought up without a license server. Warn before the test cases
+# start (the license may have been set up another way). Skipped when the config value is itself
+# missing, since check_license_server has just said so. The full run redeploys first, and a
+# physical chassis has its own licensing path, so neither is checked here.
+check_labserver_licensed() {
+    [[ "$CFG_TC_MODE" == "virtual" && ( "$MODE" == "smoke-test" || "$MODE" == "test-only" ) ]] || return 0
+    license_server_valid || return 0
+    [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
+    state_owns "$STATE_FILE" LABSERVER_UNLICENSED || return 0
+    log_warn "The Labserver was deployed without a license server, and deployment.stc.license_server is set now.
+         If you licensed it another way you can ignore this. Otherwise run --deploy-only again to redeploy the Labserver with the configured license server."
+}
+
+# After --deploy-only on a virtual lab: say so when the Labserver came up without a license
+# server. Printed here, in the foreground, because the deploy phase's own output goes to a log file.
+warn_labserver_unlicensed() {
+    [[ "$MODE" == "deploy-only" && "$CFG_TC_MODE" == "virtual" ]] || return 0
+    [[ "${CFG_LICENSE_MANAGED_EXTERNALLY:-0}" == "1" ]] && return 0
+    state_owns "$STATE_FILE" LABSERVER_UNLICENSED || return 0
+    log_warn "The Labserver was deployed without a license server (deployment.stc.license_server is empty or still the placeholder '@license-server.example.com').
+         If you license it another way (an Aion license, or a license server you configure in the Labserver yourself) you can ignore this.
+         Otherwise set a valid license server in config.yaml and run --deploy-only again before running tests."
 }
 
 # Does this mode need a reachable docker daemon from the start? --gen-config does not: it only
@@ -268,6 +277,7 @@ run_stages() {
 
     if [[ "$MODE" == "deploy-only" ]]; then
         log_ok "Environment deployed (--deploy-only) - skipping access check, gen-config, deploy-mg, pretest/smoke test/cleanup."
+        warn_labserver_unlicensed
         phase_report
         exit $?
     fi
@@ -384,6 +394,7 @@ if [[ "$MODE" == "validate" ]]; then
 fi
 
 check_license_server
+check_labserver_licensed
 
 if [[ "$MODE" == "show-config" ]]; then
     print_run_config

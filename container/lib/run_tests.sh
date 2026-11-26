@@ -89,6 +89,20 @@ phase_pretest() {
     fi
 }
 
+# When a test log shows STC's "could not connect to a license server" failure, say plainly what it
+# means and how to fix it (the raw failure is buried in a long gRPC traceback). Returns 0 and prints
+# the hint when the log matches, 1 otherwise. Used after a failed smoke test.
+license_failure_hint() {
+    local log="$1"
+    grep -q "Failed to connect to a license server" "$log" 2>/dev/null || return 1
+    if [[ "${CFG_LABSERVER_MODE:-}" == "provisioned" ]]; then
+        log_err "Cause: the Labserver ($CFG_LABSERVER_IP) has no usable license server. It is provisioned, so this tool does not configure it: license it (SPIRENTD_LICENSE_FILE on the Labserver) and re-run."
+    else
+        log_err "Cause: the Labserver has no usable license server. Set a valid deployment.stc.license_server in config.yaml (for example '@hostname' or 'host:port') and run --deploy-only again to redeploy the Labserver with it; if you license the Labserver another way, check that setup."
+    fi
+    return 0
+}
+
 phase_smoke_test() {
     log_step "Running snappi smoke test"
     local log="$LOG_DIR/smoke_test.log"
@@ -109,6 +123,9 @@ phase_smoke_test() {
         RESULT_SMOKE="FAILED"
         log_err "snappi smoke test FAILED - see $log"
         tail -n 40 "$log" >&2
+        if license_failure_hint "$log"; then
+            SUMMARY_SMOKE="${SUMMARY_SMOKE:+$SUMMARY_SMOKE - }Labserver has no usable license server (see config.yaml deployment.stc.license_server)"
+        fi
         return 1
     elif [[ "${passed:-0}" -eq 0 ]]; then
         # Same "exit 0 but nothing actually ran" case as phase_pretest above -
