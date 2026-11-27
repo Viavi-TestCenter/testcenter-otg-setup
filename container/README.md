@@ -241,6 +241,15 @@ set before `--deploy-only`).
 Every step from `--access-check` on needs a deployed environment, so run the full command or
 `--deploy-only` first. Every test step also runs the access check and config generation first.
 
+**Deployment check.** `--deploy-only` (and the deploy part of a full run) records what it
+deployed: `deployment.target`, `deployment.stc.version`, the deployment host address, and the
+Labserver and OTG service mode. `--pretest`, `--smoke-test`, `--test-only` and the test stage of
+a full run compare these with the current `config.yaml` and stop before running anything if they
+differ, listing each changed value. Run `--deploy-only` again to deploy the new configuration.
+If nothing has been deployed yet (or the last deploy did not finish) they stop with a message to
+run `--deploy-only`. Other settings, such as `testbed:` and the license server, are not part of
+this check.
+
 **Inspect and maintain**
 
 | Command | What it does |
@@ -399,6 +408,8 @@ When something fails, the message names the `config.yaml` key to check. `--valid
 | Labserver cannot connect to the chassis or reserve ports | Check that `deployment.stc.version` equals the chassis version, that the Labserver can reach the chassis, and that it is licensed |
 | `This test requires at least 2 ports`, or the test hangs on ARP | Check that `testbed.dut.links` has 2 or more entries and the VLAN matches the DUT. Push the minigraph again (`--deploy-mg`) after changing topology |
 | `DUT ... SSH port not reachable after redeploy` | A newly published `sonic-vs` image can be bad. Load a known-good image and set it in `deployment.dut_vs.image` |
+| `Configuration has changed since the environment was deployed` | You changed a deployment setting after `--deploy-only`. Run `--deploy-only` again, or restore the old value |
+| `No deployment record found` | Nothing has been deployed yet, the last deploy did not finish, or the environment was deployed by an older version of this tool or removed with `--destroy`. Run `--deploy-only` |
 | Stale results or ignored config changes | Run again without `--no-cleanup`. If that does not help, `--destroy` and re-run |
 | Deploy takes minutes | Normal for image pulls and builds. Follow `deploy_services.log` |
 

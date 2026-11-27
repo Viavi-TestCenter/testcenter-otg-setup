@@ -47,6 +47,8 @@ run_mode() {
             eval "${f}() { echo \"CALL ${f}\"; return 0; }"
         done
         record_phase() { :; }
+        # deployed-identity gate: covered by test_deployed_identity.sh
+        clear_deployed_identity() { :; }; record_deployed_identity() { :; }; check_deployed_identity() { :; }
         state_set() { :; }
         state_owns() { [[ "${done}" == "1" ]]; }
         run_stages

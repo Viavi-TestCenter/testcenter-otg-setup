@@ -48,6 +48,69 @@ phase_check_version_change() {
     fi
 }
 
+# ------------------------------------------------- deployed identity ----
+# The settings that decide WHICH environment --deploy-only builds, recorded in $STATE_FILE after a
+# successful deploy and compared again before every test stage (--pretest, --smoke-test, --test-only,
+# full run), so tests never run against an environment that no longer matches config.yaml.
+# Deliberately small: target, STC version, deployment host address, Labserver and OTG service mode
+# (docker-compose, standalone or provisioned - docker_compose.enabled is already reflected in both).
+# Everything else in config.yaml (testbed:, license, logging, cleanup, minigraph, ...) is not part
+# of it. The host address is only an identity when this tool deploys the Labserver or OTG service;
+# a provisioned service's address is testbed.endpoints, not a deployment.
+# Output, one per line: <state key>|<config key shown to the user>|<current value>
+_deployed_identity_current() {
+    local host_ip="n/a"
+    if [[ "${CFG_LABSERVER_MODE}" != "provisioned" ]]; then
+        host_ip="${CFG_LABSERVER_IP}"
+    elif [[ "${CFG_OTG_MODE}" != "provisioned" ]]; then
+        host_ip="${CFG_OTG_SERVICE_IP}"
+    fi
+    printf '%s\n' \
+        "DEPLOYED_TARGET|deployment.target|${CFG_TARGET}" \
+        "DEPLOYED_STC_VERSION|deployment.stc.version|${CFG_TC_VERSION}" \
+        "DEPLOYED_HOST_IP|deployment.otg_labserver.host_ip|${host_ip}" \
+        "DEPLOYED_LABSERVER_MODE|Labserver mode|${CFG_LABSERVER_MODE}" \
+        "DEPLOYED_OTG_MODE|OTG service mode|${CFG_OTG_MODE}"
+}
+
+record_deployed_identity() {
+    local key label value
+    while IFS='|' read -r key label value; do
+        state_set "${STATE_FILE}" "${key}" "${value}"
+    done < <(_deployed_identity_current)
+}
+
+# Forget the record: the environment is being (re)deployed or removed, so what was recorded no
+# longer describes it. A failed deploy therefore leaves "no record" rather than a stale one.
+clear_deployed_identity() {
+    local tmp; tmp="$(mktemp)"
+    grep -v '^DEPLOYED_' "${STATE_FILE}" > "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${STATE_FILE}"
+}
+
+# Exit unless the current deployment settings equal the recorded ones. A missing record (fresh
+# host, failed or older deploy) is its own error, not a mismatch.
+check_deployed_identity() {
+    if [[ -z "$(state_get "${STATE_FILE}" DEPLOYED_TARGET)" ]]; then
+        die_wrap "No deployment record found - the environment has not been deployed by this tool yet (or the last deployment did not finish)." \
+            "Run --deploy-only before running tests."
+    fi
+    local key label current deployed shown_deployed shown_current mismatches=""
+    while IFS='|' read -r key label current; do
+        deployed="$(state_get "${STATE_FILE}" "${key}")"
+        [[ "${deployed}" == "${current}" ]] && continue
+        shown_deployed="${deployed:-(none)}"; shown_current="${current:-(none)}"
+        mismatches+="  ${label}:"$'\n'"    deployed: ${shown_deployed}"$'\n'"    current:  ${shown_current}"$'\n'
+    done < <(_deployed_identity_current)
+    [[ -n "${mismatches}" ]] || return 0
+    log_err "Configuration has changed since the environment was deployed:"
+    _log ""
+    printf '%s' "${mismatches}" | while IFS= read -r line; do _log "${line}"; done >&2
+    _log ""
+    _log "Run --deploy-only before running tests." >&2
+    exit 1
+}
+
 phase_deploy_services() {
     log_step "Deploying/verifying lab (services + virtual chassis/DUT)"
     local log="${LOG_DIR}/deploy_services.log"
@@ -800,6 +863,7 @@ phase_destroy() {
     # a stale "done" flag from before this teardown.
     state_set "${STATE_FILE}" DEPLOY_MG_DONE 0
     state_set "${STATE_FILE}" LABSERVER_UNLICENSED 0
+    clear_deployed_identity
 
     if state_owns "${STATE_FILE}" OWN_CLAB; then
         log_info "Destroying containerlab topology"

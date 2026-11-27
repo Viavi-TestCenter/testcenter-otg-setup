@@ -13,6 +13,8 @@
 #   4 deploy-mg     --deploy-mg      push the generated minigraph to the DUT
 #   5 tests         --pretest, --smoke-test, --test-only, and the full run (no flag)
 # Every test stage (4, 5) first runs stage 2 and then stage 3.
+# The test modes (--pretest, --smoke-test, --test-only, full run) first check that the deployment
+# settings in config.yaml still match the environment --deploy-only recorded (see README.md).
 #
 # Options:
 #   -c, --config <path>   Path to config.yaml (default: ./config.yaml next to this script)
@@ -273,7 +275,11 @@ run_stages() {
 
         # No ansible/testbed files are generated here (stage 3 does that, just before
         # they are needed); the containerlab topology is part of the deploy itself.
+        # The record of what was deployed is dropped first and written again only on success,
+        # so a failed deploy cannot leave tests running against a half-replaced environment.
+        clear_deployed_identity
         if phase_deploy_services; then
+            record_deployed_identity
             if [[ "${CFG_TC_MODE}" == "virtual" ]]; then
                 record_phase "Service deployment" "OK" "labserver=${CFG_LABSERVER_MODE} otg=${CFG_OTG_MODE} clab(${CFG_DUT_MODE})"
             else
@@ -311,6 +317,13 @@ run_stages() {
     # Every post-deploy mode assumes the environment is already deployed and never
     # touches infrastructure itself; "full" has just deployed it.
     [[ "${MODE}" == "full" ]] || require_deployed_environment
+
+    # The test stages must run against the environment config.yaml describes: stop here, before the
+    # access check (which can write to a physical DUT), if the deployment settings have changed.
+    case "${MODE}" in
+        full|pretest|smoke-test|test-only) check_deployed_identity ;;
+        *) ;;
+    esac
 
     run_access_step
 
