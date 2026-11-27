@@ -114,7 +114,7 @@ check_deployed_identity() {
 phase_deploy_services() {
     log_step "Deploying/verifying lab (services + virtual chassis/DUT)"
     local log="${LOG_DIR}/deploy_services.log"
-    if run_phase_with_spinner "Lab deployment (services + virtual chassis/DUT)" "${log}" _phase_deploy_services_impl; then
+    if run_phase_with_spinner "Lab deployment" "${log}" _phase_deploy_services_impl; then
         log_ok "Lab ready (services + virtual chassis/DUT)"
     else
         return 1
