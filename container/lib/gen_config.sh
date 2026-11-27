@@ -1,69 +1,72 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2312  # pipelines/command substitutions in tests and log helpers are best-effort; failures are handled by callers; variables are defined in the sourcing script / other lib files
 # gen_config.sh — phase 4: render the ansible/testbed/topology files that wire
 # sonic-mgmt to this lab's IPs, credentials, and cabling, driven entirely by
 # config.yaml. Files that are wholly ours are regenerated from scratch; files
 # shared with the rest of the sonic-mgmt repo (testbed.yaml, the inv_name.yml
 # group_vars file) are patched in place, leaving unrelated content untouched.
 
-phase_generate_ansible_config() {
-    log_step "Generating ansible/testbed/topology configuration"
-
-    local ansible_dir="$SONIC_MGMT_DIR/ansible"
-    [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
-
-    _gen_testbed_config "$ansible_dir"
-    _gen_password_file "$ansible_dir"
-    _gen_clab_topology
-
-    log_ok "Ansible/testbed/topology configuration generated"
-}
-
-# README §4.1-4.7 (excludes §4.8's STC/OTG compatibility patch): the
+# guide §4.1-4.7 (excludes guide §4.8's STC/OTG compatibility patch): the
 # ansible-side files describing the DUT/chassis/OTG device inventory,
-# cabling, and lab addressing. Shared by phase_generate_ansible_config
-# (full pipeline) and phase_gen_config (--gen-config, standalone below).
+# cabling, and lab addressing. Written by phase_gen_config (stage 3), which
+# every test stage runs just before it needs them - the deploy stage
+# (--deploy-only) writes none of them.
 _gen_testbed_config() {
     local ansible_dir="$1"
-    _gen_devices_csv "$ansible_dir"
-    _gen_links_csv "$ansible_dir"
-    _gen_inventory "$ansible_dir"
-    _patch_testbed_yaml "$ansible_dir"
-    _gen_secrets_yml "$ansible_dir"
-    _patch_group_vars_snappi_yml "$ansible_dir"
-    _gen_topo_yml "$ansible_dir"
+    _gen_devices_csv "${ansible_dir}"
+    _gen_links_csv "${ansible_dir}"
+    _gen_inventory "${ansible_dir}"
+    _patch_testbed_yaml "${ansible_dir}"
+    _gen_secrets_yml "${ansible_dir}"
+    _patch_group_vars_snappi_yml "${ansible_dir}"
+    _gen_topo_yml "${ansible_dir}"
 }
 
-# --gen-config: only the README §4.1-4.7 testbed files above - not the
-# password file or containerlab topology (§3-scoped, not part of §4), and
-# not §4.8's patch (applied separately via phase_sonic_mgmt_source).
+# Stage 3 (--gen-config, and the second half of every test stage): the
+# guide §4.1-4.7 testbed files above plus the ansible password file, then the
+# inventory check (the ansible-inventory graph lists the DUT host) - the one
+# part of the old verify step that needs the generated files. Not guide §4.8's patch
+# (applied by phase_sonic_mgmt_source) and not the containerlab topology (part
+# of the deploy stage). Contacts no external component. Generated files are
+# overwritten on every run; do not hand-edit them.
 phase_gen_config() {
-    log_step "Generating testbed configuration (README §4.1-4.7, excl. §4.8 patch)"
+    log_step "Generating testbed configuration"
 
-    local ansible_dir="$SONIC_MGMT_DIR/ansible"
-    [[ -d "$ansible_dir" ]] || die "ansible/ not found under sonic-mgmt checkout: $ansible_dir"
+    local ansible_dir="${SONIC_MGMT_DIR}/ansible"
+    [[ -d "${ansible_dir}" ]] || die "ansible/ not found under sonic-mgmt checkout: ${ansible_dir}"
 
-    _gen_testbed_config "$ansible_dir"
+    _gen_testbed_config "${ansible_dir}"
+    _gen_password_file "${ansible_dir}"
+    invalidate_stale_deploy_mg
 
-    log_ok "Testbed configuration generated under $ansible_dir"
+    # ansible-inventory runs inside the sonic-mgmt container.
+    if docker ps --format '{{.Names}}' | grep -qx "${SONIC_MGMT_CONTAINER}"; then
+        _verify_inventory
+    else
+        log_warn "sonic-mgmt container '${SONIC_MGMT_CONTAINER}' is not running - skipping the inventory check."
+        log_detail "The check runs inside that container. Run --deploy-only, then --gen-config again to check it."
+    fi
+
+    log_ok "Testbed configuration generated under ${ansible_dir}"
 }
 
-_otg_ip() { printf '%s' "$CFG_OTG_SERVICE_IP"; }
+_otg_ip() { printf '%s' "${CFG_OTG_SERVICE_IP}"; }
 
 _gen_devices_csv() {
     local f="$1/files/sonic_${CFG_TESTBED_INV_NAME}_devices.csv"
-    mkdir -p "$(dirname "$f")"
+    mkdir -p "$(dirname "${f}")"
     {
         echo "Hostname,ManagementIp,HwSku,Type"
         echo "${CFG_DUT_HOSTNAME},${CFG_DUT_MGMT_IP}/24,${CFG_DUT_HWSKU},DevSonic"
         echo "snappi-sonic-stc,${CFG_STC_CHASSIS_IP}/24,SNAPPI-tester,DevSnappiChassis"
         echo "snappi-sonic-api-serv,$(_otg_ip)/24,SNAPPI-tester,DevSnappiApiServ"
-    } > "$f"
-    log_info "wrote $f"
+    } > "${f}"
+    log_info "wrote ${f}"
 }
 
 _gen_links_csv() {
     local f="$1/files/sonic_${CFG_TESTBED_INV_NAME}_links.csv"
-    mkdir -p "$(dirname "$f")"
+    mkdir -p "$(dirname "${f}")"
     {
         echo "StartDevice,StartPort,EndDevice,EndPort,BandWidth,VlanID,VlanMode"
         local i
@@ -72,15 +75,15 @@ _gen_links_csv() {
             bw_var="CFG_DUT_LINK_${i}_BANDWIDTH"; vid_var="CFG_DUT_LINK_${i}_VLAN_ID"
             echo "${CFG_DUT_HOSTNAME},${!dp_var},snappi-sonic-stc,${!sp_var},${!bw_var},${!vid_var},Access"
         done
-    } > "$f"
-    log_info "wrote $f"
+    } > "${f}"
+    log_info "wrote ${f}"
 }
 
 _gen_inventory() {
     local f="$1/${CFG_TESTBED_INV_NAME}"
     local ptf_user_suffix=""
-    [[ -n "$CFG_OTG_SSH_USER" ]] && ptf_user_suffix="  ansible_user=${CFG_OTG_SSH_USER}"
-    cat > "$f" <<EOF
+    [[ -n "${CFG_OTG_SSH_USER}" ]] && ptf_user_suffix="  ansible_user=${CFG_OTG_SSH_USER}"
+    cat > "${f}" <<EOF
 [${CFG_TESTBED_DUT_GROUP}]
 ${CFG_DUT_HOSTNAME}     ansible_host=${CFG_DUT_MGMT_IP}
 
@@ -103,13 +106,13 @@ sonic
 [ptf]
 snappi-sonic-ptf     ansible_host='$(_otg_ip)'${ptf_user_suffix}
 EOF
-    log_info "wrote $f"
+    log_info "wrote ${f}"
 }
 
 _patch_testbed_yaml() {
     local f="$1/testbed.yaml"
-    [[ -f "$f" ]] || die "testbed.yaml not found: $f"
-    python3 "$LIB_DIR/patch_testbed_yaml.py" "$f" "$CFG_TESTBED_CONF_NAME" <<EOF
+    [[ -f "${f}" ]] || die "testbed.yaml not found: ${f}"
+    python3 "${LIB_DIR}/patch_testbed_yaml.py" "${f}" "${CFG_TESTBED_CONF_NAME}" <<EOF
 conf-name: ${CFG_TESTBED_CONF_NAME}
 group-name: vms6-1
 topo: ${CFG_TOPO_NAME}
@@ -125,53 +128,53 @@ inv_name: ${CFG_TESTBED_INV_NAME}
 auto_recover: 'True'
 comment: run_snappi_test.sh
 EOF
-    log_info "patched $f (conf-name: ${CFG_TESTBED_CONF_NAME})"
+    log_info "patched ${f} (conf-name: ${CFG_TESTBED_CONF_NAME})"
 }
 
 _gen_secrets_yml() {
     local dir="$1/group_vars/${CFG_TESTBED_INV_NAME}"
-    mkdir -p "$dir"
-    local f="$dir/secrets.yml"
-    cat > "$f" <<EOF
+    mkdir -p "${dir}"
+    local f="${dir}/secrets.yml"
+    cat > "${f}" <<EOF
 ansible_ssh_pass: ${CFG_DUT_PASSWORD}
 ansible_become_pass: ${CFG_DUT_PASSWORD}
 sonicadmin_user: ${CFG_DUT_USER}
 sonicadmin_password: ${CFG_DUT_PASSWORD}
 sonicadmin_initial_password: ${CFG_DUT_PASSWORD}
 EOF
-    chmod 600 "$f"
-    log_info "wrote $f (chmod 600)"
+    chmod 600 "${f}"
+    log_info "wrote ${f} (chmod 600)"
 }
 
 _patch_group_vars_snappi_yml() {
     local dir="$1/group_vars/${CFG_TESTBED_INV_NAME}"
-    local f="$dir/${CFG_TESTBED_INV_NAME}.yml"
+    local f="${dir}/${CFG_TESTBED_INV_NAME}.yml"
     local line="snappi_api_server: {user: ${CFG_OTG_USER}, password: ${CFG_OTG_PASSWORD}, rest_port: ${CFG_OTG_REST_PORT}, session_id: \"None\"}"
 
-    if [[ ! -f "$f" ]]; then
-        mkdir -p "$dir"
-        printf '%s\n' "$line" > "$f"
-        log_info "created $f with snappi_api_server"
+    if [[ ! -f "${f}" ]]; then
+        mkdir -p "${dir}"
+        printf '%s\n' "${line}" > "${f}"
+        log_info "created ${f} with snappi_api_server"
         return
     fi
 
-    if grep -q '^snappi_api_server:' "$f"; then
-        sed -i "s|^snappi_api_server:.*|${line//\\/\\\\}|" "$f"
+    if grep -q '^snappi_api_server:' "${f}"; then
+        sed -i "s|^snappi_api_server:.*|${line//\\/\\\\}|" "${f}"
     else
-        printf '\n%s\n' "$line" >> "$f"
+        printf '\n%s\n' "${line}" >> "${f}"
     fi
-    grep -q "^snappi_api_server: {user: ${CFG_OTG_USER}" "$f" \
-        || die "Failed to patch snappi_api_server into $f - inspect it manually."
-    log_info "patched $f (snappi_api_server)"
+    grep -q "^snappi_api_server: {user: ${CFG_OTG_USER}" "${f}" \
+        || die "Failed to patch snappi_api_server into ${f} - inspect it manually."
+    log_info "patched ${f} (snappi_api_server)"
 }
 
 _gen_topo_yml() {
     local f="$1/vars/topo_${CFG_TOPO_NAME}.yml"
-    mkdir -p "$(dirname "$f")"
+    mkdir -p "$(dirname "${f}")"
     {
         echo "topology:"
         echo "  host_interfaces:"
-        for (( i=0; i<CFG_DUT_TOTAL_PORTS; i++ )); do echo "    - $i"; done
+        for (( i=0; i<CFG_DUT_TOTAL_PORTS; i++ )); do echo "    - ${i}"; done
         echo ""
         echo "  DUT:"
         echo "    vlan_configs:"
@@ -181,7 +184,7 @@ _gen_topo_yml() {
         echo "          id: ${CFG_TOPO_VLAN_ID}"
         printf '          intfs: ['
         for (( i=0; i<CFG_DUT_TOTAL_PORTS; i++ )); do
-            printf '%s' "$i"
+            printf '%s' "${i}"
             (( i < CFG_DUT_TOTAL_PORTS - 1 )) && printf ', '
         done
         printf ']\n'
@@ -193,23 +196,25 @@ _gen_topo_yml() {
         echo "configuration_properties:"
         echo "  common:"
         echo "    dut_type: ${CFG_TOPO_DUT_TYPE}"
-    } > "$f"
-    log_info "wrote $f"
+    } > "${f}"
+    log_info "wrote ${f}"
 }
 
 _gen_password_file() {
     local f="$1/password.txt"
-    [[ -f "$f" ]] || echo "abc" > "$f"
-    chmod 600 "$f"
+    [[ -f "${f}" ]] || echo "abc" > "${f}"
+    chmod 600 "${f}"
 }
 
+# Part of the deploy stage (called by _phase_deploy_services_impl): it is only
+# needed to deploy a virtual lab, and needs nothing from testbed:.
 _gen_clab_topology() {
-    mkdir -p "$WORK_DIR"
-    if [[ "$CFG_TC_MODE" == "virtual" ]]; then
+    if [[ "${CFG_TC_MODE}" == "virtual" ]]; then
+        mkdir -p "${WORK_DIR}"
         _gen_clab_topology_virtual
-        log_info "wrote $CLAB_TOPO_FILE (testcenter.mode=virtual)"
+        log_info "wrote ${CLAB_TOPO_FILE} (deployment.target=virtual, ${CFG_CLAB_LINK_COUNT} veth link(s) to the chassis)"
     else
-        log_info "testcenter.mode=physical - STC chassis and DUT are external hardware, no containerlab topology needed"
+        log_info "deployment.target=physical - STC chassis and DUT are external hardware, no containerlab topology needed"
     fi
 }
 
@@ -242,18 +247,25 @@ _gen_clab_topology_virtual() {
         echo "        HWSKU: ${CFG_DUT_HWSKU}"
         echo ""
         echo "  links:"
-        local i
-        for (( i=0; i<CFG_DUT_LINKS_COUNT; i++ )); do
-            sp_var="CFG_DUT_LINK_${i}_STC_PORT"; dp_var="CFG_DUT_LINK_${i}_DUT_PORT"
-            local eth=$((i + 1))
+        # One veth pair per link. The count is deployment.dut_vs.link_count, else the
+        # length of testbed.dut.links, else 2 (resolved by the loader), so a deploy-only
+        # run with no testbed: section still gets its links. The STC/DUT port names are
+        # kept as comments only when the cabling is known.
+        local i eth sp_note dp_note sp_var dp_var
+        for (( i=0; i<CFG_CLAB_LINK_COUNT; i++ )); do
+            eth=$((i + 1)); sp_note=""; dp_note=""
+            if (( i < ${CFG_DUT_LINKS_COUNT:-0} )); then
+                sp_var="CFG_DUT_LINK_${i}_STC_PORT"; dp_var="CFG_DUT_LINK_${i}_DUT_PORT"
+                sp_note="           # ${!sp_var}"; dp_note="           # ${!dp_var}"
+            fi
             echo "    - type: veth"
             echo "      endpoints:"
             echo "        - node: snappi-sonic-stc"
-            echo "          interface: eth${eth}           # ${!sp_var}"
+            echo "          interface: eth${eth}${sp_note}"
             echo "        - node: ${CFG_DUT_HOSTNAME}"
-            echo "          interface: eth${eth}           # ${!dp_var}"
+            echo "          interface: eth${eth}${dp_note}"
             printf '          mac: 02:00:00:00:01:%02x\n' "$((i + 1))"
         done
-    } > "$CLAB_TOPO_FILE"
+    } > "${CLAB_TOPO_FILE}"
 }
 

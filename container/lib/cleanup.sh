@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # variables are defined in the sourcing script / other lib files
 # cleanup.sh — phase 8: post-test cleanup.
 #
 # phase_cleanup_cache clears pytest's fact/result cache inside the sonic-mgmt
@@ -9,8 +10,8 @@
 # --destroy or cleanup_env_on_failure below.
 #
 # cleanup_env_on_failure auto-tears-down tool-owned environment resources
-# after a FAILED run, controlled by cleanup.env_on_failure in config.yaml
-# (default: true). It uses the exact same scope as --destroy (phase_destroy)
+# after a FAILED run, controlled by deployment.cleanup.env_on_failure in config.yaml
+# (default: false). It uses the exact same scope as --destroy (phase_destroy)
 # - only resources this tool created are ever removed. A successful run
 # never calls this - the environment is always left deployed for reuse.
 
@@ -26,9 +27,11 @@ phase_cleanup_cache() {
     # (.pytest_cache) lives at the sonic-mgmt repo root (its rootdir), not
     # under tests/.
     local repo; repo="$(sonic_mgmt_container_path)"
-    docker exec -w "$repo" "$SONIC_MGMT_CONTAINER" bash -lc "rm -rf tests/_cache/* .pytest_cache" \
-        && log_ok "Cache cleared (tests/_cache, .pytest_cache)" \
-        || log_warn "Cache clear failed (non-fatal) - stale results may persist on next run"
+    if docker exec -w "${repo}" "${SONIC_MGMT_CONTAINER}" bash -lc "rm -rf tests/_cache/* .pytest_cache"; then
+        log_ok "Cache cleared (tests/_cache, .pytest_cache)"
+    else
+        log_warn "Cache clear failed (non-fatal) - stale results may persist on next run"
+    fi
 }
 
 # ensure_clean_pytest_cache recreates .pytest_cache immediately before a
@@ -48,22 +51,24 @@ ensure_clean_pytest_cache() {
     log_step "Resetting pytest cache before pretest"
     local repo; repo="$(sonic_mgmt_container_path)"
     local user; user="$(sonic_mgmt_user)"
-    docker exec -w "$repo" "$SONIC_MGMT_CONTAINER" bash -lc \
-        "rm -rf .pytest_cache && mkdir -p .pytest_cache && chown -R '$user' .pytest_cache" \
-        && log_ok "pytest cache reset (owner: $user)" \
-        || log_warn "pytest cache reset failed (non-fatal) - collection may hit stale cache permissions"
+    if docker exec -w "${repo}" "${SONIC_MGMT_CONTAINER}" bash -lc \
+        "rm -rf .pytest_cache && mkdir -p .pytest_cache && chown -R '${user}' .pytest_cache"; then
+        log_ok "pytest cache reset (owner: ${user})"
+    else
+        log_warn "pytest cache reset failed (non-fatal) - collection may hit stale cache permissions"
+    fi
 }
 
 cleanup_env_on_failure() {
-    if [[ "$MODE" == "deploy-only" ]]; then
+    if [[ "${MODE}" == "deploy-only" ]]; then
         record_phase "Environment cleanup" "SKIPPED" "--deploy-only always keeps the environment"
         return
     fi
-    if [[ "$CFG_CLEANUP_ENV_ON_FAILURE" != "1" ]]; then
-        record_phase "Environment cleanup" "SKIPPED" "cleanup.env_on_failure=false - environment kept for debugging"
+    if [[ "${CFG_CLEANUP_ENV_ON_FAILURE}" != "1" ]]; then
+        record_phase "Environment cleanup" "SKIPPED" "deployment.cleanup.env_on_failure=false - environment kept for debugging"
         return
     fi
-    log_step "Run failed - tearing down tool-owned environment (cleanup.env_on_failure=true)"
+    log_step "Run failed - tearing down tool-owned environment (deployment.cleanup.env_on_failure=true)"
     if phase_destroy; then
         record_phase "Environment cleanup" "OK"
     else

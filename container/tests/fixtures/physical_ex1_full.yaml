@@ -1,0 +1,56 @@
+# Proposal example 1 extended to the full testbed: section (pretest / smoke test).
+deployment:
+  target: physical
+  images:
+    dir: "./images"
+  stc:
+    version: "5.62.0766"
+    license_server: "@license-server.example.com"
+  otg_labserver:
+    docker_compose: { enabled: true, keep_build_image: true }
+  sonic_mgmt:
+    source_dir: ""
+    repo: "https://github.com/sonic-net/sonic-mgmt.git"
+    branch: "master"
+    baseline_commit: "91d8be388"
+    patch: { apply: true, file: "./snappi-stc-patch-v0.1.patch" }
+    custom_tests: { overwrite: true, source_dir: "../example/sonic_snappi/tests" }
+    keep_sonic_mgmt_src: true
+  allure:
+    enabled: false
+  cleanup:
+    env_on_failure: false
+    replace_on_version_change: true
+  logging:
+    dir: ""
+
+testbed:
+  endpoints:
+    stc_chassis_ip: "10.0.0.20"
+  dut:
+    hostname: "dut1"
+    mgmt_ip: "10.0.0.30"
+    hwsku: "Force10-S6000"
+    credentials: { user: admin, password: admin }
+    iface_speed: "40000"
+    total_ports: 32
+    links:
+      - { dut_port: Ethernet0, stc_port: Card1/Port1, bandwidth: 40000, vlan_id: 1000 }
+      - { dut_port: Ethernet4, stc_port: Card1/Port2, bandwidth: 40000, vlan_id: 1000 }
+  otg: { credentials: { user: admin, password: admin }, ssh_user: "" }
+  definition:
+    conf_name: "vms-snappi-sonic"
+    inv_name: "snappi-sonic"
+    dut_group_name: "sonic_dell64_40"
+    server_group: "Server_6"
+  topology:
+    name: "tgen_ptf32"
+    dut_type: "ToRRouter"
+    vlan:
+      id: 1000
+      prefix: "192.168.100.1/24"
+      prefix_v6: "fc02:1000::1/64"
+      tag: 1000
+      mac: "00:aa:bb:cc:dd:ee"
+  reporting:
+    allure_project_id: "snappi-smoke"

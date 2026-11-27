@@ -1,240 +1,368 @@
 # =============================================================================
 # run_snappi_test.sh configuration
 #
+#   deployment:  WHAT THE TOOL STANDS UP (images, STC/DUT/Labserver/OTG/
+#                sonic-mgmt, report server, cleanup, logging)          -> guide §3
+#   testbed:     HOW THE LAB LOOKS TO sonic-mgmt AND THE TESTS (external
+#                equipment's addresses, DUT, cabling, credentials,
+#                testbed/topology definition)                          -> guide §4
+#
+#   ("guide" = ../README.md, the Snappi Environment Setup and Quick Test Guide;
+#    how to use this tool: README.md in this folder)
+#
+# INTENDED USE
+#   This tool is designed exclusively for fixed pre-test and smoke testing of a
+#   1 TGen + 1 DUT setup.
+#
+#   It is not intended to support arbitrary sonic-mgmt testbeds, custom
+#   topologies, or general-purpose sonic-mgmt test execution.
+#
+#   It also supports deploying a general snappi test environment (sonic-mgmt tester,
+#   Labserver, OTG service, sonic-mgmt source, patch and custom tests) next to your
+#   OWN physical DUT and STC chassis (deployment.target: physical, --deploy-only).
+#   For that the tool deploys the environment only: it does not generate, validate
+#   or support the testbed or the tests you run in it.
+#
+# TARGETS
+#   deployment.target: virtual is the validated lab (community SONiC only) and is
+#   recommended. deployment.target: physical runs the same pretest and smoke test
+#   against your OWN physical DUT and STC chassis (see README.md section 4); this has
+#   NOT been validated: results depend on your DUT configuration, cabling and VLAN
+#   setup. For a physical DUT the tool never configures the DUT unless you ask it to
+#   (see the WARNING below).
+#
 # Paths are resolved relative to this file's own directory unless given as
 # absolute paths. Passwords below are lab defaults (admin/admin) matching the
 # containerlab SONiC default credentials - change them for a real DUT.
 #
-# WARNING - physical DUT configuration is overwritten: with dut.mode: physical,
-# the deploy-mg step (full run, --test-only, --deploy-mg, and automatically
-# --pretest/--smoke-test) pushes a generated minigraph and REPLACES the real
-# switch's running configuration. Use only a dedicated lab DUT, back up its
-# config first, and never run it against a production or shared switch.
-# --deploy-only does not touch the DUT's config.
-# This tool supports community SONiC only - not Enterprise/vendor SONiC forks.
+# Address rule: a component the tool deploys has its address in deployment:;
+# an external one (physical, provisioned) has it in testbed:. Setting both to
+# different values is an error.
+#
+# WARNING - physical DUT is modified by this tool in two ways:
+#   1. Minigraph push (deploy-mg step): pushes a minigraph generated from
+#      testbed.dut / testbed.topology and REPLACES the real switch's running
+#      configuration. It runs for a physical DUT only with an explicit
+#      --deploy-mg or testbed.deploy_minigraph: true (default "auto" = never
+#      for physical), and only with --yes on the command line: --yes confirms the
+#      replacement of the DUT's running configuration. Without it the run stops
+#      before touching the DUT (no prompt, so CI behaves the same). Back up the DUT
+#      config first.
+#   2. SSH key install (--access-check, and the start of every test stage): ensure the
+#      sonic-mgmt public key exists in the DUT admin user's ~/.ssh/authorized_keys.
+#      The key is appended only if it is missing;
+#      SONiC configuration is not modified. --deploy-only never touches a physical DUT.
+# Dedicated lab DUT only, never a production or shared switch. Community SONiC only.
 # =============================================================================
 
-images:
-  dir: "./images"                 # local cache of VIAVI + opensource images/artifacts
+# -----------------------------------------------------------------------------
+# DEPLOYMENT
+# -----------------------------------------------------------------------------
+deployment:
+  target: virtual                 # virtual | physical (replaces testcenter.mode + dut.mode)
+                                  # virtual is the recommended target for the pretest and smoke test (the
+                                  # validated scope of this tool). physical is for users who bring their own
+                                  # DUT and STC chassis: the tool deploys the sonic-mgmt / Labserver / OTG
+                                  # service environment next to them, and the pretest and smoke test run
+                                  # against them (supported but not validated).
+                                  # virtual : this tool deploys the STC chassis and the DUT as containerlab
+                                  #           containers (addresses below, in this section)
+                                  # physical: STC chassis and DUT are existing hardware; nothing is deployed
+                                  #           for them and containerlab never runs. Their addresses go in
+                                  #           testbed.endpoints.stc_chassis_ip / testbed.dut.mgmt_ip.
+                                  #           Same meaning as "provisioned" below: the tool never deploys or
+                                  #           destroys it (see the WARNING above for what it does write to a DUT).
+
+  images:
+    dir: "./images"               # local cache of VIAVI + opensource images/artifacts
                                   # (docker images not already loaded/pulled are taken from here)
 
-testcenter:
-  mode: virtual                    # virtual | physical (optional, default virtual).
-                                    # virtual: this tool deploys the STC chassis (and the DUT, see
-                                    #   dut.mode below) itself, as containerlab-managed docker
-                                    #   containers - today's default behavior.
-                                    # physical: the STC chassis AND the DUT are pre-existing real
-                                    #   hardware, reachable over the network at
-                                    #   deployment.stc_chassis.ip / dut.mgmt_ip respectively - this
-                                    #   tool deploys neither, and never runs containerlab at all.
-                                    # MUST match dut.mode below - mixed virtual/physical deployments
-                                    # (e.g. a containerized STC chassis cabled to a physical DUT) are
-                                    # not supported and are rejected at config validation time.
-  version: "5.62.0766"                              # -> stc_5.62.0766.tgz, or a VIAVI zip distribution
-                                                    # (Spirent_TestCenter_Docker_5.62.0766.zip) containing
-                                                    # that same tgz - either is accepted under images.dir,
-                                                    # the zip is auto-extracted on first use. Labserver and
-                                                    # OTG service versions are derived from this, not configured
-                                                    # separately: labserver expects an exact match
-                                                    # (-> labserver-5.62.0766.tar.xz), OTG service only
-                                                    # needs its leading major.minor to match (the "5.62"
-                                                    # -> otgservice.5.62.*.sh, e.g.
-                                                    # otgservice.5.62.0009-20260112080331.sh), since its
-                                                    # patch/build numbering doesn't track STC's.
-                                                    # Only consulted when testcenter.mode is virtual - a
-                                                    # physical chassis has its own installed version.
-  license_server: "@license-server.example.com"     # REQUIRED when testcenter.mode is virtual.
-                                                    # SPIRENTD_LICENSE_FILE value. Examples:
+  otg_labserver:                  # Labserver + OTG service ONLY (not STC, DUT, sonic-mgmt or Allure)
+    host_ip: ""                   # OPTIONAL. This host's address, used for the Labserver and the OTG service
+                                  # whenever THIS TOOL deploys them (docker-compose or standalone). Both always
+                                  # run on this host, so one value covers both and no per-component ip is needed.
+                                  #   empty (default): auto-detected = first address of `hostname -I`
+                                  #                    (e.g. WSL2's eth0 IP). 127.0.0.1/localhost is never used
+                                  #                    as-is, because the sonic-mgmt container and otgctl cannot
+                                  #                    reach this host through loopback. An explicit
+                                  #                    127.0.0.1 / localhost is treated as empty (an info line
+                                  #                    is logged).
+                                  #   set explicitly: used as-is. Set it when auto-detection picks the wrong
+                                  #                    interface (several NICs, VPN, docker bridges); a failed
+                                  #                    detection logs a warning asking for this key.
+                                  # NOT used for a provisioned Labserver/OTG service: their addresses are in
+                                  # testbed.endpoints.*.
+    docker_compose:               # ONE switch for the combined stack (guide §3.5)
+      enabled: true               # true : deploy Labserver AND OTG service together on THIS host via VIAVI's
+                                  #        testcenter-otg-setup docker-compose stack (it uses the checkout this
+                                  #        container solution itself ships inside, one directory up from
+                                  #        container/, directly - no separate clone); the two modes below are
+                                  #        not used (a "set but ignored" line is logged). Combining true
+                                  #        with a mode of "provisioned" below is an ERROR (the service would
+                                  #        be deployed here anyway): set enabled: false to use a provisioned
+                                  #        Labserver or OTG service.
+                                  # false: each component follows its own mode below.
+      keep_build_image: true      # only used when enabled: true. --destroy keeps the OTG image built for
+                                  # this stack (otg:latest) and removes only the containers, so the next deploy
+                                  # skips rebuilding it from the installer. false = also remove the image,
+                                  # forcing a rebuild next time. Never affects labserver images (cached VIAVI
+                                  # artifacts, not build output).
+    labserver:
+      mode: standalone            # used only when docker_compose.enabled: false ("provisioned" with
+                                  # enabled: true is rejected, see above)
+                                  #   standalone  : docker run on THIS host
+                                  #   provisioned : already exists elsewhere; never deployed or destroyed.
+                                  #                 Same meaning as target: physical for the chassis and DUT.
+                                  #                 Its address goes in testbed.endpoints.labserver_ip.
+    otg_service:
+      mode: standalone            # used only when docker_compose.enabled: false
+                                  #   standalone  : otgctl on THIS host, pointed at the labserver (host_ip,
+                                  #                 or testbed.endpoints.labserver_ip when the labserver is
+                                  #                 provisioned)
+                                  #   provisioned : already exists elsewhere. Address in
+                                  #                 testbed.endpoints.otg_service.
+                                  # A deployed OTG service is reached at host_ip. There is NO port key for a
+                                  # deployed OTG service: it always listens on 50051 (hard-coded in
+                                  # otg-compose.yaml and the otgctl default; this tool passes no port to
+                                  # either), so it cannot be changed here. A different port would only make
+                                  # the readiness wait fail. For a provisioned OTG service the port is
+                                  # testbed.endpoints.otg_service.port.
+
+  stc:                            # STC software version and license. NOT virtual-only (see per-key notes).
+    version: "5.62.0766"          # REQUIRED when target is virtual (selects the STC chassis image), AND whenever
+                                  # this tool deploys the Labserver or OTG service, even with target: physical:
+                                  # the Labserver image (labserver-<version>.tar.xz) and the OTG installer
+                                  # (matching major.minor) are derived from it. For a physical chassis it must
+                                  # equal the software version installed on that chassis. The user or lab owner
+                                  # keeps it correct: the tool does not check it against the chassis or the
+                                  # Labserver.
+                                  # Virtual chassis: -> stc_5.62.0766.tgz, or a VIAVI zip distribution
+                                  # (Spirent_TestCenter_Docker_5.62.0766.zip) containing that same tgz - either is
+                                  # accepted under deployment.images.dir; the zip is auto-extracted on first use.
+                                  # Labserver and OTG service versions are derived from this, not configured
+                                  # separately: the Labserver expects an exact match (-> labserver-5.62.0766.tar.xz),
+                                  # the OTG service only needs its leading major.minor to match (the "5.62" ->
+                                  # otgservice.5.62.*.sh, e.g. otgservice.5.62.0009-20260112080331.sh), since its
+                                  # patch/build numbering doesn't track STC's.
+    license_server: "@license-server.example.com"   # OPTIONAL. The STC license server for a virtual chassis,
+                                                    # and the one written into a Labserver this tool deploys
+                                                    # (compose or standalone) as SPIRENTD_LICENSE_FILE.
+                                                    # Empty or this placeholder only gives a WARNING (after
+                                                    # --deploy-only, and before the test cases of the full run,
+                                                    # --test-only and --smoke-test on a virtual lab): your
+                                                    # license may come from elsewhere (an Aion license, or a
+                                                    # license server you set up in the Labserver yourself).
+                                                    # With no valid value, no license is written into a
+                                                    # deployed Labserver. Examples:
                                                     #   @license-server.company.com
                                                     #   @10.10.10.10
                                                     #   license-server.company.com:7443
-                                                    # Not validated/used when testcenter.mode is physical -
-                                                    # a physical chassis typically has its own separate
-                                                    # licensing path.
+                                                    # Not used when the tool deploys neither a virtual chassis
+                                                    # nor a Labserver: the physical chassis and a provisioned
+                                                    # Labserver have their own licensing path.
                                                     #
                                                     # For licensing assistance:
                                                     # https://www.viavisolutions.com/support
+    # license_managed_externally: true   # OPTIONAL, default false. Set it when the lab is licensed another way (an
+                                         # Aion license, or a license server you configured in the Labserver yourself)
+                                         # and you leave license_server empty: it silences the missing-license-server
+                                         # warnings. It changes nothing else (no license is written into a deployed
+                                         # Labserver without a valid license_server).
+    mgmt_ip: "192.168.1.2"        # virtual target only. Chassis container mgmt IP - set statically on the containerlab
+                                  # node (not auto-assigned); must be inside 192.168.1.0/24, default is fine.
+                                  # (physical: the chassis address is testbed.endpoints.stc_chassis_ip, REQUIRED from --access-check)
 
-# Labserver / OTG service / STC chassis. "standalone" means this tool deploys
-# them on THIS host via docker run + otgctl; "docker-compose" means this tool
-# deploys labserver+OTG together on THIS host via VIAVI's testcenter-otg-setup
-# docker-compose stack (see VIAVI OTG Service Deployment Guide);
-# "provisioned" means they already exist elsewhere and this tool only
-# verifies reachability - it will never deploy or destroy them.
-deployment:
-  mode: docker-compose            # standalone | provisioned | docker-compose
-  docker_compose:                 # only used when mode: docker-compose
-                                  # Uses the testcenter-otg-setup checkout this container solution
-                                  # itself ships inside (one directory up from container/) directly -
-                                  # no separate clone.
-    keep_build_image: true        # optional, default true. --destroy (and same-scope teardowns) will
-                                  # NOT remove the OTG image built for this stack (otg:latest) - only
-                                  # the labserver/otg containers are removed, so the next deploy skips
-                                  # rebuilding it from the installer. Set false to also remove it on
-                                  # destroy, forcing a rebuild next time. Never affects labserver images
-                                  # (those are cached VIAVI artifacts, not build output).
-  labserver:
-    ip: "127.0.0.1"               # reachable IP of the labserver
-  otg_service:
-    ip: "127.0.0.1"               # reachable IP of the OTG API service. The sonic-mgmt
-                                  # test runs inside a container, so 127.0.0.1/localhost
-                                  # here is auto-resolved to this host's real address
-                                  # (e.g. WSL2's eth0 IP) - set an explicit IP instead if
-                                  # auto-detection (hostname -I) picks the wrong interface.
-    port: 50051
-  stc_chassis:
-    ip: "192.168.1.2"             # testcenter.mode: virtual  -> STC chassis container mgmt IP - set statically on the
-                                  #   containerlab node (not auto-assigned); must be inside 192.168.1.0/24, default is fine
-                                  # testcenter.mode: physical -> REQUIRED. Management IP of the real STC chassis.
+  dut_vs:                         # virtual target only (sonic-vs)
+    image: "vrnetlab/sonic_sonic-vs:master"
+    image_archive: ""             # empty = auto-detect sonic-vs-*.tar.gz under deployment.images.dir
+    build_sonic_vs: true          # (optional, default true) If image is not found in 'docker images' and no archive
+                                  # is found/configured, and image's repository is exactly "vrnetlab/sonic_sonic-vs",
+                                  # automatically build it by downloading sonic-vs.img.gz for image's tag (e.g.
+                                  # "master" or a release branch like "202511") - see download_source below for
+                                  # where from - and running vrnetlab's build (guide §3.3). It always builds the
+                                  # tag image asks for, never a different one (e.g. never fabricates "202511" from
+                                  # a master build). Fails with a clear error if that tag has no published
+                                  # sonic-vs.img.gz at the selected source. Set to false to disable and always
+                                  # require a manually provided image/archive. An image already present in
+                                  # 'docker images' is always used as-is and never subject to any of this -
+                                  # including custom/manually-built tags with no corresponding SONiC branch name.
+    download_source: auto         # auto | azure | sonic.software
+                                  # auto: try Azure first, then fallback to sonic.software
+                                  # Only consulted when build_sonic_vs actually needs to download and build an
+                                  # image that isn't already present locally - never applied to an existing
+                                  # local image, regardless of its tag.
+    keep_dut_artifacts: true      # (optional, default true) If build_sonic_vs built the sonic-vs image at least
+                                  # once, --destroy (and same-scope teardowns) will NOT remove the downloaded/built
+                                  # artifacts under deployment.images.dir/vrnetlab (the vrnetlab source checkout and the
+                                  # extracted sonic-vs-*.qcow2), so the next build skips re-cloning/re-downloading.
+                                  # false = also remove them on destroy. No effect if build_sonic_vs never built.
+    keep_dut_image: true          # (optional, default true) If build_sonic_vs built the sonic-vs docker image at
+                                  # least once, --destroy (and same-scope teardowns) will NOT remove that built
+                                  # image (dut_vs.image), so the next deploy skips rebuilding it. false = also
+                                  # remove it on destroy. No effect if build_sonic_vs never built the image.
+    hostname: "sonic-s6100-dut1"  # containerlab node name
+    mgmt_ip: "192.168.1.3"        # DUT container mgmt IP - set statically on the containerlab node (not
+                                  # auto-assigned); must be inside 192.168.1.0/24, default is fine
+    hwsku: "Force10-S6000"        # passed to the container as HWSKU
+    credentials: { user: admin, password: admin }   # passed as USERNAME / PASSWORD
 
-dut:
-  mode: virtual                   # virtual (sonic-vs deployed via containerlab) | physical (existing hardware).
-                                  # MUST match testcenter.mode above - see the note there.
-                                  # WARNING: physical => deploy-mg OVERWRITES the real DUT's running
-                                  #   config (generated minigraph, built from hwsku/iface_speed/
-                                  #   total_ports/links/topology below - set them for your hardware).
-                                  #   Dedicated lab DUT only, back up its config first, never a
-                                  #   production/shared switch. Community SONiC only.
-  hostname: "sonic-s6100-dut1"
-  mgmt_ip: "192.168.1.3"          # dut.mode: virtual  -> DUT container mgmt IP - set statically on the containerlab
-                                  #   node (not auto-assigned); must be inside 192.168.1.0/24, default is fine
-                                  # dut.mode: physical -> REQUIRED. Management IP of the real DUT.
-  hwsku: "Force10-S6000"
-  iface_speed: "40000"
-  total_ports: 32                 # full front-panel port count of the platform (topology port range,
-                                  # independent of how many ports are actually cabled below)
-  image: "vrnetlab/sonic_sonic-vs:master"  # virtual mode only
-  image_archive: ""                        # virtual mode only; empty = auto-detect sonic-vs-*.tar.gz under images.dir
-  build_sonic_vs: true                     # (optional, default true) virtual mode only. If dut.image is not found in
-                                           # 'docker images' and no archive is found/configured, and dut.image's
-                                           # repository is exactly "vrnetlab/sonic_sonic-vs", automatically build it
-                                           # by downloading sonic-vs.img.gz for dut.image's tag (e.g. "master" or a
-                                           # release branch like "202511") - see download_source below for where
-                                           # from - and running vrnetlab's build (guide §3.3). It always builds the
-                                           # tag dut.image asks for, never a different one (e.g. never fabricates
-                                           # "202511" from a master build). Fails with a clear error if that tag has
-                                           # no published sonic-vs.img.gz at the selected source. Set to false to
-                                           # disable and always require a manually provided image/archive. An image
-                                           # already present in 'docker images' is always used as-is and never
-                                           # subject to any of this - including custom/manually-built tags with no
-                                           # corresponding SONiC branch name.
-  download_source: auto                    # auto | azure | sonic.software
-                                           # auto: try Azure first, then fallback to sonic.software
-                                           # Only consulted when build_sonic_vs above actually needs to download and
-                                           # build an image that isn't already present locally - never applied to an
-                                           # existing local image, regardless of its tag.
-  keep_dut_artifacts: true                 # (optional, default true) virtual mode only. If build_sonic_vs built the
-                                           # sonic-vs image at least once, --destroy (and same-scope teardowns) will
-                                           # NOT remove the downloaded/built artifacts under images.dir/vrnetlab
-                                           # (the vrnetlab source checkout and the extracted sonic-vs-*.qcow2) - so
-                                           # the next build skips re-cloning/re-downloading. Set false to also
-                                           # remove them on destroy, forcing a fresh clone/download next time. Has
-                                           # no effect if build_sonic_vs never actually built the image.
-  keep_dut_image: true                     # (optional, default true) virtual mode only. If build_sonic_vs built the
-                                           # sonic-vs docker image at least once, --destroy (and same-scope
-                                           # teardowns) will NOT remove that built image (dut.image, e.g.
-                                           # vrnetlab/sonic_sonic-vs:master or vrnetlab/sonic_sonic-vs:202511) - so
-                                           # the next deploy skips rebuilding it. Set false to also remove it on
-                                           # destroy, forcing a rebuild next time. Has no effect if build_sonic_vs
-                                           # never actually built the image.
-  credentials:
-    user: admin
-    password: admin
-  links:                          # DUT <-> STC front-panel cabling; at least 2 entries required for the smoke test
-    - dut_port: Ethernet0
-      stc_port: Card1/Port1
-      bandwidth: 40000
-      vlan_id: 1000
-      host_interface: ""          # DEPRECATED, unused - was only needed for a containerized STC
-                                   # chassis cabled to a physical DUT, a combination no longer
-                                   # supported (testcenter.mode must match dut.mode). Kept for
-                                   # backward compatibility with existing config.yaml files only;
-                                   # safe to leave empty or remove.
-    - dut_port: Ethernet4
-      stc_port: Card1/Port2
-      bandwidth: 40000
-      vlan_id: 1000
-      host_interface: ""
+  sonic_mgmt:
+    source_dir: ""                # empty => clone fresh under .run_snappi_test/sonic-mgmt next to this config;
+                                  # set to an existing checkout (e.g. wk_snappi_container_test) to reuse it as-is
+    repo: "https://github.com/sonic-net/sonic-mgmt.git"
+    branch: "master"
+    baseline_commit: "91d8be388"  # patch is only validated against this exact commit
+    patch:
+      apply: true                 # explicit toggle - set false to manage the patch yourself.
+                                  # Never applied automatically to a dirty existing checkout either way.
+      file: "./snappi-stc-patch-v0.1.patch"
+    custom_tests:
+      overwrite: true             # (optional, default false) Overwrite upstream snappi test scripts under the
+                                  # checkout's tests/ tree with VIAVI-customized versions containing the
+                                  # workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG
+                                  # solution. source_dir below mirrors sonic-mgmt's tests/ layout 1:1 (e.g.
+                                  # tests/snappi_tests/pfc/..., tests/common/snappi_tests/..., tests/conftest.py)
+                                  # - only overwrites paths that already exist upstream, re-synced on every
+                                  # full/--deploy-only run (not patch-tracked, so it always matches source_dir
+                                  # exactly rather than needing an "already applied" check). Never applied to
+                                  # a dirty user-supplied checkout, same rule as patch.apply above.
+      source_dir: "../example/sonic_snappi/tests"   # directory mirroring sonic-mgmt's tests/ layout;
+                                                    # relative paths resolve against this file's own directory
+    keep_sonic_mgmt_src: true     # (optional, default false) If true, --destroy (and
+                                  # deployment.cleanup.env_on_failure/replace_on_version_change teardowns) will NOT delete a
+                                  # tool-owned sonic-mgmt clone (source_dir empty) - every other tool-owned
+                                  # resource is still removed. Has no effect on a user-supplied checkout
+                                  # (source_dir set), which is never deleted by this tool regardless.
 
-otg:
-  credentials:
-    user: admin
-    password: admin
-  rest_port: 50051
-  ssh_user: ""                    # optional ansible_user for the [ptf] inventory line; leave empty to omit
+  allure:                         # report server (guide §3.6)
+    enabled: false                # opt-in only; not deployed unless explicitly set to true. Set true to
+                                  # deploy the report server and publish test results to it
+                                  # (testbed.reporting.allure_project_id is only used then).
+    host: ""                      # empty = this host's address
+    ui_port: 5252
+    api_port: 5050
 
-sonic_mgmt:
-  source_dir: ""                  # empty => clone fresh under workspace/sonic-mgmt next to this config;
-                                   # set to an existing checkout (e.g. wk_snappi_container_test) to reuse it as-is
-  repo: "https://github.com/sonic-net/sonic-mgmt.git"
-  branch: "master"
-  baseline_commit: "91d8be388"    # patch is only validated against this exact commit
-  patch:
-    apply: true                    # explicit toggle - set false to manage the patch yourself.
-                                   # Never applied automatically to a dirty existing checkout either way.
-    file: "./snappi-stc-patch-v0.1.patch"
-  custom_tests:
-    overwrite: true                # (optional, default false) Overwrite upstream snappi test scripts under
-                                   # the checkout's tests/ tree with VIAVI-customized versions containing the
-                                   # workarounds needed to run those test cases against VIAVI's Snappi/STC/OTG
-                                   # solution. source_dir below mirrors sonic-mgmt's tests/ layout 1:1 (e.g.
-                                   # tests/snappi_tests/pfc/..., tests/common/snappi_tests/..., tests/conftest.py)
-                                   # - only overwrites paths that already exist upstream, re-synced on every
-                                   # full/--deploy-only run (not patch-tracked, so it always matches source_dir
-                                   # exactly rather than needing an "already applied" check). Never applied to
-                                   # a dirty user-supplied checkout, same rule as patch.apply above.
-    source_dir: "../example/sonic_snappi/tests"   # directory mirroring sonic-mgmt's tests/ layout;
-                                                  # relative paths resolve against this file's own directory
-  keep_sonic_mgmt_src: true         # (optional, default false) If true, --destroy (and
-                                    # cleanup.env_on_failure/replace_on_version_change teardowns)
-                                    # will NOT delete a tool-owned sonic-mgmt clone (source_dir
-                                    # empty) - every other tool-owned resource is still removed.
-                                    # Has no effect on a user-supplied checkout (source_dir set),
-                                    # which is never deleted by this tool regardless.
+  cleanup:
+    env_on_failure: false         # After deploy-mg or the pretest/smoke test FAILS, automatically tear down all
+                                  # tool-owned environment resources (Labserver, OTG service, containerlab
+                                  # topology, sonic-mgmt container/clone - same scope as --destroy). A successful
+                                  # run always leaves the environment deployed for reuse - this setting never
+                                  # touches that case. false = keep a FAILED environment around for debugging.
+                                  # Does not apply to --deploy-only, which always leaves the environment
+                                  # deployed regardless of outcome. Never touches non-deployed components.
+    replace_on_version_change: true   # (optional, default true) If a tool-owned STC chassis container from a
+                                  # previous run is still deployed and deployment.stc.version now names a
+                                  # different version, automatically tear down the whole tool-owned environment
+                                  # (same scope as --destroy) before deploying fresh on the new version. false =
+                                  # keep the old environment and fall back to each resource's normal per-resource
+                                  # reuse check - this can leave a mix of old/new component versions running.
 
-cleanup:
-  env_on_failure: false             # After deploy-mg or the pretest/smoke test FAILS, automatically
-                                    # tear down all tool-owned environment resources (labserver, OTG
-                                    # service, containerlab topology, sonic-mgmt container/clone - same
-                                    # scope as --destroy). A successful run always leaves the
-                                    # environment deployed for reuse - this setting never touches that
-                                    # case. Set to false to keep a FAILED environment around for
-                                    # debugging instead. Does not apply to --deploy-only, which always
-                                    # leaves the environment deployed regardless of outcome.
-  replace_on_version_change: true   # (optional, default true) If a tool-owned STC chassis container
-                                    # from a previous run is still deployed and testcenter.version now
-                                    # names a different version, automatically tear down the whole
-                                    # tool-owned environment (labserver, OTG service, containerlab
-                                    # topology, sonic-mgmt container/clone - same scope as --destroy)
-                                    # before deploying fresh on the new version. Set to false to instead
-                                    # keep the old environment and fall back to each resource's normal
-                                    # per-resource reuse check - this can leave a mix of old/new
-                                    # component versions running together.
+  logging:
+    dir: ""                       # empty = "logs" under the current working directory (where the script is
+                                  # invoked from); set to override (relative paths resolve against this file's
+                                  # own directory, like deployment.images.dir above)
 
-logging:
-  dir: ""                           # empty = "logs" under the current working directory (where the
-                                    # script is invoked from); set to override (relative paths resolve
-                                    # against this file's own directory, like images.dir above)
-
-allure:
-  enabled: true                   # opt-in only; not deployed unless explicitly set to true
-  host: ""                        # empty = this host's address
-  ui_port: 5252
-  api_port: 5050
-  project_id: "snappi-smoke"
-
+# -----------------------------------------------------------------------------
+# SNAPPI TESTBED  (read by every run EXCEPT --deploy-only)
+#
+# Each "REQUIRED" below names the first run that needs the key:
+#   from --access-check : --access-check and every test stage
+#   from --gen-config   : every test stage (--gen-config, --deploy-mg, --test-only,
+#                         --pretest, --smoke-test, and the full run without a flag)
+# --deploy-only needs none of them, so this whole section can be omitted for it.
+# One exception: endpoints.labserver_ip, which --deploy-only reads when a standalone
+# OTG service is started against a provisioned Labserver.
+#
+# Only the testbed this tool generates from this section is supported (see INTENDED
+# USE). Generated files are overwritten on every run that regenerates them; do not
+# hand-edit them.
+#
+# The minigraph and topology parts (topology.*, deploy_minigraph) matter only
+# when a minigraph is pushed (see deploy_minigraph). Under the default, a
+# physical DUT never gets one automatically.
+# -----------------------------------------------------------------------------
 testbed:
-  conf_name: "vms-snappi-sonic"
-  inv_name: "snappi-sonic"
-  dut_group_name: "sonic_dell64_40"
-  server_group: "Server_6"
+  endpoints:                      # ONLY for components the tool does not deploy
+    stc_chassis_ip: ""            # REQUIRED from --access-check when target: physical. Management IP of the real STC chassis.
+    labserver_ip: ""              # REQUIRED from --access-check when labserver is provisioned (--deploy-only also reads it,
+                                  # for a standalone OTG service). Reachable IP of the Labserver.
+    otg_service:                  # REQUIRED from --access-check when otg_service is provisioned
+      ip: ""                      # reachable IP of the OTG API service
+      port: 50051                 # provisioned OTG service port (a deployed one is always 50051)
 
-topology:
-  name: "tgen_ptf32"
-  dut_type: "ToRRouter"
-  vlan:
-    id: 1000
-    prefix: "192.168.100.1/24"
-    prefix_v6: "fc02:1000::1/64"
-    tag: 1000
-    mac: "00:aa:bb:cc:dd:ee"
+  dut:
+    hostname: ""                  # virtual: inherited from deployment.dut_vs (omit; a differing value is an error)
+    mgmt_ip: ""                   # physical: all four REQUIRED - the real DUT's name, management IP, hwsku
+    hwsku: ""                     #           and login. mgmt_ip and credentials: REQUIRED from --access-check;
+                                  #           hostname and hwsku: from --gen-config. They also feed the generated minigraph (hwsku,
+    credentials: { user: "", password: "" }   # iface_speed, total_ports, links, topology) - set them for
+                                  #           your hardware. Community SONiC only.
+    iface_speed: "40000"          # always testbed; iface_speed, total_ports and links are REQUIRED from --gen-config
+    total_ports: 32               # full front-panel port count of the platform (topology port range,
+                                  # independent of how many ports are actually cabled below)
+    links:                        # DUT <-> STC front-panel cabling. Checked from --gen-config on (an error):
+                                  #   - at least 2 entries (the smoke test needs 2 ports; more are fine)
+                                  #   - no dut_port and no stc_port used twice
+                                  #   - every vlan_id equal to testbed.topology.vlan.id (one VLAN carries all ports)
+                                  # Port names, bandwidth and total_ports are NOT checked against each other.
+      - dut_port: Ethernet0
+        stc_port: Card1/Port1
+        bandwidth: 40000
+        vlan_id: 1000
+      - dut_port: Ethernet4
+        stc_port: Card1/Port2
+        bandwidth: 40000
+        vlan_id: 1000
+
+  otg:
+    credentials: { user: admin, password: admin }
+    ssh_user: ""                  # optional ansible_user for the [ptf] inventory line; leave empty to omit.
+                                  # (otg.*: REQUIRED from --gen-config)
+
+  deploy_minigraph: auto          # auto : (default) true for deployment.target: virtual, false for physical,
+                                  #        so a physical DUT's config is never overwritten unless you ask.
+                                  # true : full, --test-only, --pretest and --smoke-test push the generated
+                                  #        minigraph first (--pretest/--smoke-test only when not already
+                                  #        recorded as done since the last deploy). On a physical DUT this
+                                  #        overwrites its running config; the loader logs a warning, and the
+                                  #        run stops unless --yes is given (it confirms that replacement).
+                                  # false: none of them ever push it (a DUT you configure yourself).
+                                  # An explicit --deploy-mg always pushes, whatever this says (on a
+                                  # physical DUT it needs --yes too). A virtual DUT never needs --yes.
+
+  # ---------------------------------------------------------------------------
+  # ADVANCED - NOT RECOMMENDED TO MODIFY unless you really know what you are doing.
+  # The defaults of `definition` and `topology` below work for the virtual lab and
+  # have not been validated against a physical DUT. Changing them is untested and can
+  # break deploy-mg, the pretest or the smoke test.
+  # ---------------------------------------------------------------------------
+  definition:                     # testbed.yaml / inventory names (was top-level testbed:)
+                                  # Internal labels only: this tool writes them into testbed.yaml, the
+                                  # inventory, group_vars/ and the devices/links CSV file names, and
+                                  # passes the same values to deploy-mg and pytest. Renaming is not
+                                  # needed for a normal run. If you do: use plain identifiers (no spaces),
+                                  # and remove the old generated files from the sonic-mgmt checkout.
+    conf_name: "vms-snappi-sonic"
+    inv_name: "snappi-sonic"
+    dut_group_name: "sonic_dell64_40"
+    server_group: "Server_6"
+
+  topology:
+    name: "tgen_ptf32"            # MUST start with "tgen" (an error otherwise: sonic-mgmt derives the testbed
+                                  # type from the name prefix; the snappi tests are marked topology('tgen')). The bundled patch
+                                  # (snappi-stc-patch-v0.1.patch) is written for this exact topology name.
+    dut_type: "ToRRouter"
+    vlan:                         # These values become the DUT's VLAN ONLY when a minigraph is pushed (virtual
+                                  # DUT, --deploy-mg or deploy_minigraph: true). The tests read the VLAN from the
+                                  # DUT itself, so with a physical DUT and no push they must already match what
+                                  # you configured on the switch.
+      id: 1000                    # must equal tag and every testbed.dut.links[].vlan_id (an error otherwise,
+                                  # the conflicting paths and values are listed); the customized
+                                  # conftest also assumes "Vlan1000"
+      prefix: "192.168.100.1/24"  # on a physical DUT with a push: must not clash with your lab networks
+      prefix_v6: "fc02:1000::1/64"
+      tag: 1000
+      mac: "00:aa:bb:cc:dd:ee"
+
+  reporting:
+    allure_project_id: "snappi-smoke"   # Allure project the test results are published to

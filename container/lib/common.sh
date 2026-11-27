@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2154,SC2312  # pipelines/command substitutions in tests and log helpers are best-effort; failures are handled by callers; variables are consumed by the sourced code or other lib files; variables are defined in the sourcing script / other lib files
 # common.sh — logging, locking, secret redaction, and small helpers shared by
 # every phase script. Sourced by run_snappi_test.sh; do not execute directly.
 
@@ -12,30 +13,89 @@ fi
 
 _log() {
     printf '%s\n' "$*"
-    [[ -n "${RUN_LOG:-}" ]] && printf '%s\n' "$*" >> "$RUN_LOG"
+    [[ -n "${RUN_LOG:-}" ]] && printf '%s\n' "$*" >> "${RUN_LOG}"
     return 0
 }
 
-log_info() { _log "${C_BLU}[INFO ]${C_RST} $*"; }
-log_ok()   { _log "${C_GRN}[ OK  ]${C_RST} $*"; }
-log_warn() { _log "${C_YLW}[WARN ]${C_RST} $*" >&2; }
-log_err()  { _log "${C_RED}[ERROR]${C_RST} $*" >&2; }
+# _LOG_FD: the stream of the last log_* call, so log_detail continuation lines follow their headline
+# (stdout for info/ok, stderr for warn/err - which also keeps them out of a $(...) capture).
+_LOG_FD=1
+log_info() { _LOG_FD=1; _log "${C_BLU}[INFO ]${C_RST} $*"; }
+log_ok()   { _LOG_FD=1; _log "${C_GRN}[ OK  ]${C_RST} $*"; }
+log_warn() { _LOG_FD=2; _log "${C_YLW}[WARN ]${C_RST} $*" >&2; }
+log_err()  { _LOG_FD=2; _log "${C_RED}[ERROR]${C_RST} $*" >&2; }
+# Wrap width for log_detail: the terminal width when known ($COLUMNS, else `tput cols`), capped at
+# LOG_WRAP_MAX (default 100, a common readable maximum) and never below 60. Piped/redirected runs
+# (no terminal) wrap at the cap.
+LOG_WRAP_MAX="${LOG_WRAP_MAX:-100}"
+_log_wrap_cols() {
+    local cols="${COLUMNS:-}"
+    [[ "${cols}" =~ ^[0-9]+$ || "${IS_TTY:-0}" -ne 1 ]] || cols="$(tput cols 2>/dev/null)"
+    [[ "${cols}" =~ ^[0-9]+$ ]] || cols="${LOG_WRAP_MAX}"
+    (( cols > LOG_WRAP_MAX )) && cols="${LOG_WRAP_MAX}"
+    (( cols < 60 )) && cols=60
+    echo "${cols}"
+}
+
+# Continuation line(s) under a log_warn/log_info: wrapped to fit the terminal (see _log_wrap_cols)
+# and indented to line up under the text after the "[WARN ] " tag. Pass "- text" for a bullet
+# (wrapped lines are indented under the bullet text).
+log_detail() {
+    local line first=1 hang="" width
+    [[ "$*" == "- "* ]] && hang="  "
+    width=$(( $(_log_wrap_cols) - 9 - ${#hang} ))
+    while IFS= read -r line; do
+        line="${line%"${line##*[![:space:]]}"}"
+        if (( first )); then _log "         ${line}" >&"${_LOG_FD}"; first=0; else _log "         ${hang}${line}" >&"${_LOG_FD}"; fi
+    done < <(printf '%s\n' "$*" | fold -s -w "${width}")
+}
 log_step() { _log ""; _log "${C_BLD}${C_BLU}==> $*${C_RST}"; }
 
+# True when deployment.stc.license_server holds a usable value: not empty and not the shipped
+# placeholder. Used by the run-mode check and by the Labserver deploy, which writes no license
+# configuration for an unusable value.
+license_server_valid() {
+    local v
+    v="$(printf '%s' "${CFG_TC_LICENSE_SERVER:-}" | xargs)"
+    [[ -n "${v}" && "${v}" != "@license-server.example.com" ]]
+}
+
 die() { log_err "$*"; exit 1; }
+# die_wrap <headline> [detail...]: like die, but the long explanation is wrapped (log_detail) under
+# a short [ERROR] headline. A detail starting with "- " is shown as a bullet.
+die_wrap() { local head="$1" d; shift; log_err "${head}"; for d in "$@"; do log_detail "${d}"; done; exit 1; }
 
 # Redact known secret values out of a string before it is logged anywhere.
 redact() {
     local s="$1"
     for v in "${CFG_DUT_PASSWORD:-}" "${CFG_OTG_PASSWORD:-}"; do
-        [[ -n "$v" ]] && s="${s//$v/********}"
+        [[ -n "${v}" ]] && s="${s//${v}/********}"
     done
-    printf '%s' "$s"
+    printf '%s' "${s}"
 }
 
 log_cmd() { log_info "\$ $(redact "$*")"; }
 
-require_cmd() { command -v "$1" >/dev/null 2>&1; }
+# type -P: real executables on PATH only. `command -v` also matches shell functions, and
+# this file defines a `docker` wrapper function below, so `command -v docker` would be true
+# on a host with no docker installed.
+require_cmd() { type -P "$1" >/dev/null 2>&1; }
+
+# $SUDO prefixes the few host-level commands that need root (apt/systemctl in the
+# env check, `mount --make-rshared /` on WSL in sonic_mgmt.sh) - never docker, see
+# docker_bootstrap_sudo below. It is resolved here, once, at load time rather than
+# only inside phase_env_check: with --skip-env-check that phase never runs, and
+# the first `$SUDO ...` then aborted the run under `set -u` ("SUDO: unbound variable").
+resolve_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        SUDO=""
+    elif require_cmd sudo; then
+        SUDO="sudo"
+    else
+        SUDO=""
+    fi
+}
+resolve_sudo
 
 # --- docker wrapper: transparently falls back to 'sudo docker' -------------
 # If this shell's docker group membership isn't active yet (e.g. the user
@@ -45,12 +105,31 @@ require_cmd() { command -v "$1" >/dev/null 2>&1; }
 # tool goes through this function so the fallback applies everywhere without
 # editing every call site.
 DOCKER_SUDO=""
+# shellcheck disable=SC2032  # intentional: this function wraps docker, optionally via sudo
 docker() {
-    if [[ -n "$DOCKER_SUDO" ]]; then
+    if [[ -n "${DOCKER_SUDO}" ]]; then
+        # shellcheck disable=SC2033  # deliberately the real docker binary, not this function
         sudo docker "$@"
     else
         command docker "$@"
     fi
+}
+
+# The docker() function above only covers calls made by this shell. Child processes
+# (vrnetlab's `make` -> `docker build`, `docker compose` helpers, ...) exec the real docker
+# binary and would hit "permission denied" on the socket. So also put a `docker` shim first
+# on PATH that runs the real binary through sudo. -n: never prompt (the keepalive below
+# keeps the credential fresh), so an expired credential fails loudly instead of hanging
+# invisibly under a spinner. The shim dir is removed on exit (DOCKER_SHIM_DIR, see
+# _on_exit in run_snappi_test.sh).
+DOCKER_SHIM_DIR=""
+_install_docker_sudo_shim() {
+    local real
+    real="$(type -P docker)" || return 0
+    DOCKER_SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/snappi-docker-shim.XXXXXX")" || return 0
+    printf '#!/bin/sh\nexec sudo -n %s "$@"\n' "${real}" > "${DOCKER_SHIM_DIR}/docker"
+    chmod 755 "${DOCKER_SHIM_DIR}/docker"
+    export PATH="${DOCKER_SHIM_DIR}:${PATH}"
 }
 
 # Detects the permission-denied case above and, if found, primes 'sudo
@@ -58,13 +137,30 @@ docker() {
 # any phase that backgrounds docker calls via run_phase_with_spinner - a
 # sudo password prompt there would be hidden behind the spinner and look
 # like a hang.
+#
+# Usage: docker_bootstrap_sudo [--soft]
+#   (default) docker must be usable (directly or via sudo) or the run dies.
+#   --soft    used before phase 1 (phase_env_check), which installs/starts docker: a
+#             missing or unreachable docker is not an error yet, just return. Call it again
+#             without --soft after phase 1. Idempotent: a second call is a no-op once
+#             docker answers (directly or through the sudo fallback).
 docker_bootstrap_sudo() {
-    require_cmd docker || return 0
+    local soft=0
+    [[ "${1:-}" == "--soft" ]] && soft=1
+    if ! require_cmd docker; then
+        [[ "${soft}" -eq 1 ]] && return 0
+        die "docker is not installed. Run without --skip-env-check so phase 1 can install it, or install Docker manually."
+    fi
     docker info >/dev/null 2>&1 && return 0
-    log_warn "docker is installed but this shell can't reach the daemon without sudo (docker group membership not active in this login session?) - falling back to 'sudo docker' for the rest of this run"
-    sudo docker info >/dev/null 2>&1 \
-        || die "docker is unreachable even with sudo. Check that the docker service is running (systemctl status docker) and that sudo works for this user."
+    # shellcheck disable=SC2033  # probing the real docker binary through sudo
+    if ! sudo docker info >/dev/null 2>&1; then
+        [[ "${soft}" -eq 1 ]] && return 0
+        die "docker is unreachable even with sudo. Check that the docker service is running (systemctl status docker) and that sudo works for this user."
+    fi
+    log_warn "docker is installed but this shell can't reach the daemon without sudo."
+    log_detail "The docker group membership is probably not active in this login session, so this run falls back to 'sudo docker'."
     DOCKER_SUDO="sudo"
+    _install_docker_sudo_shim
 
     # Keep sudo's cached credential alive for the rest of this (possibly
     # long-running) script. Without this, sudo's timestamp (~15 min by
@@ -74,7 +170,7 @@ docker_bootstrap_sudo() {
     # re-prompt and look like a hang. Killed on exit in run_snappi_test.sh.
     ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 60; done ) &
     SUDO_KEEPALIVE_PID=$!
-    disown "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    disown "${SUDO_KEEPALIVE_PID}" 2>/dev/null
 }
 
 # Resolves which Compose invocation to use - prefers the "docker compose"
@@ -93,11 +189,11 @@ docker_bootstrap_sudo() {
 # port, while deploy.sh's stricter label-scoped check then decided a fresh
 # deploy was still needed and had no installer file to use.
 docker_compose_stack_up() {
-    docker ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}}' | grep -qx labserver || return 1
-    docker ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}}' | grep -qx otg || return 1
+    docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" --format '{{.Names}}' | grep -qx labserver || return 1
+    docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" --format '{{.Names}}' | grep -qx otg || return 1
     local code; code=$(http_code "http://${CFG_LABSERVER_IP}/stcapi/sessions")
-    [[ "$code" != "000" ]] || return 1
-    wait_for_tcp "$CFG_OTG_SERVICE_IP" "$CFG_OTG_SERVICE_PORT" 5 || return 1
+    [[ "${code}" != "000" ]] || return 1
+    wait_for_tcp "${CFG_OTG_SERVICE_IP}" "${CFG_OTG_SERVICE_PORT}" 5 || return 1
     return 0
 }
 
@@ -107,44 +203,58 @@ compose_cmd() {
     elif require_cmd docker-compose; then
         echo "docker-compose"
     else
-        die "Neither 'docker compose' (plugin) nor legacy 'docker-compose' is available - run without --skip-env-check so env_check.sh can install it, or install Docker Compose manually."
+        die_wrap "Neither 'docker compose' (plugin) nor legacy 'docker-compose' is available." "- Run without --skip-env-check so env_check.sh can install it, or" "- install Docker Compose manually."
     fi
 }
 
 # Resolve a config-relative path against CONFIG_DIR unless it is absolute.
 resolve_path() {
     local p="$1"
-    [[ "$p" = /* ]] && { printf '%s' "$p"; return; }
-    printf '%s' "$(cd "$CONFIG_DIR" 2>/dev/null && pwd)/$p"
+    [[ "${p}" = /* ]] || p="$(cd "${CONFIG_DIR}" 2>/dev/null && pwd)/${p}"
+    # Lexical cleanup (no symlink resolution, path need not exist): drops "./", "//",
+    # trailing "/" and folds "x/.." so messages show e.g. .../container/images.
+    if realpath -m -s -- "${p}" 2>/dev/null; then return; fi
+    # Fallback without realpath: same cleanup done in pure bash, so output never differs by host.
+    local out="" seg IFS=/
+    local -a parts=()
+    for seg in ${p}; do
+        case "${seg}" in
+            ""|.) ;;
+            ..) [[ ${#parts[@]} -gt 0 ]] && unset 'parts[${#parts[@]}-1]' ;;
+            *) parts+=("${seg}") ;;
+        esac
+    done
+    for seg in "${parts[@]}"; do out+="/${seg}"; done
+    printf '%s' "${out:-/}"
 }
 
 # --- per-run lock, so two invocations never race on the same config/workdir --
 LOCK_FD=200
 acquire_lock() {
     local lock_file="$1"
-    mkdir -p "$(dirname "$lock_file")"
-    eval "exec ${LOCK_FD}>\"$lock_file\""
-    if ! flock -n "$LOCK_FD"; then
-        die "Another run_snappi_test.sh run is already holding the lock at $lock_file. Wait for it to finish, or remove the file if you are sure no run is active."
+    mkdir -p "$(dirname "${lock_file}")"
+    eval "exec ${LOCK_FD}>\"${lock_file}\""
+    if ! flock -n "${LOCK_FD}"; then
+        die "Another run_snappi_test.sh run is already holding the lock at ${lock_file}. Wait for it to finish, or remove the file if you are sure no run is active."
     fi
-    echo "$$" >&${LOCK_FD}
+    echo "$$" >&"${LOCK_FD}"
 }
-release_lock() { flock -u "$LOCK_FD" 2>/dev/null || true; }
+release_lock() { flock -u "${LOCK_FD}" 2>/dev/null || true; }
 
 # --- ownership state: tracks which resources THIS tool created, so --destroy
 #     only ever removes what it owns (never externally-provisioned services or
 #     a user-supplied sonic-mgmt checkout). Flat KEY=VALUE file.
-state_file_init() { local f="$1"; mkdir -p "$(dirname "$f")"; touch "$f"; }
+state_file_init() { local f="$1"; mkdir -p "$(dirname "${f}")"; touch "${f}"; }
 state_set() {
     local f="$1" k="$2" v="$3"
     local tmp; tmp="$(mktemp)"
-    grep -v -e "^${k}=" "$f" 2>/dev/null > "$tmp" || true
-    echo "${k}=${v}" >> "$tmp"
-    mv "$tmp" "$f"
+    grep -v -e "^${k}=" "${f}" 2>/dev/null > "${tmp}" || true
+    echo "${k}=${v}" >> "${tmp}"
+    mv "${tmp}" "${f}"
 }
 state_get() {
     local f="$1" k="$2"
-    grep -e "^${k}=" "$f" 2>/dev/null | tail -1 | cut -d= -f2-
+    grep -e "^${k}=" "${f}" 2>/dev/null | tail -1 | cut -d= -f2-
 }
 state_owns() { [[ "$(state_get "$1" "$2")" == "1" ]]; }
 
@@ -160,14 +270,30 @@ wait_for_tcp() {
     done
 }
 
+# tcp_any_open <host> <timeout-seconds> <port>...  - true as soon as ANY of the
+# ports accepts a TCP connection (retried until the timeout). Used for a physical
+# STC chassis, whose management ports vary with its software and firewall.
+tcp_any_open() {
+    local host="$1" timeout="$2"; shift 2
+    local waited=0 p
+    while true; do
+        for p in "$@"; do
+            timeout 3 bash -c "exec 3<>\"/dev/tcp/${host}/${p}\"" 2>/dev/null && return 0
+        done
+        waited=$((waited + 3))
+        (( waited >= timeout )) && return 1
+        sleep 2
+    done
+}
+
 http_code() {
     curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || echo "000"
 }
 
 confirm_or_die() {
     local prompt="$1"
-    read -r -p "$prompt [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] || die "Aborted by user."
+    read -r -p "${prompt} [y/N] " ans
+    [[ "${ans}" =~ ^[Yy]$ ]] || die "Aborted by user."
 }
 
 # --- live progress indicator for long-running steps -------------------------
@@ -175,29 +301,41 @@ confirm_or_die() {
 # self-overwriting "<label> is still running... <spinner> MM:SS" line so a
 # slow step never looks hung. Only active on an interactive terminal - a
 # piped/redirected run just waits quietly, same as before.
+# shellcheck disable=SC1003  # the trailing backslash is a spinner frame, not an escaped quote
 SPINNER_FRAMES='|/-\'
 
 # spinner_wait <label> <pid>
 # Waits for background job <pid>, showing the indicator once it has run past
 # 10s (updated every second). Returns the job's exit status.
 spinner_wait() {
-    local label="$1" pid="$2"
-    local start=$SECONDS elapsed=0 frame_i=0 shown=0
-    while kill -0 "$pid" 2>/dev/null; do
+    local label="$1" pid="$2" status_file="${3:-}" note=""
+    local start=${SECONDS} elapsed=0 frame_i=0 shown=0
+    while kill -0 "${pid}" 2>/dev/null; do
         elapsed=$(( SECONDS - start ))
-        if [[ "$IS_TTY" -eq 1 && "$elapsed" -ge 10 ]]; then
+        if [[ "${IS_TTY}" -eq 1 && "${elapsed}" -ge 10 ]]; then
             shown=1
             local frame="${SPINNER_FRAMES:frame_i%4:1}"
-            printf '\r\033[K%s[INFO ]%s %s is still running... %s %02d:%02d' \
-                "$C_BLU" "$C_RST" "$label" "$frame" $(( elapsed/60 )) $(( elapsed%60 ))
+            note=""
+            [[ -n "${status_file}" && -s "${status_file}" ]] && note=" | $(head -n1 "${status_file}")"
+            printf '\r\033[K%s[INFO ]%s %s is still running... %s %02d:%02d%s' \
+                "${C_BLU}" "${C_RST}" "${label}" "${frame}" $(( elapsed/60 )) $(( elapsed%60 )) "${note}"
             frame_i=$((frame_i + 1))
         fi
         sleep 1
     done
-    wait "$pid"
+    wait "${pid}"
     local rc=$?
-    [[ "$shown" -eq 1 ]] && printf '\r\033[K'
-    return $rc
+    [[ "${shown}" -eq 1 ]] && printf '\r\033[K'
+    return "${rc}"
+}
+
+# phase_status [text]
+# From inside a function run via run_phase_with_spinner: shows <text> after the timer on the
+# spinner line (keep it short, about 20 characters, so the line stays on one 80-column row).
+# Call with no text to clear it. A no-op outside a spinner phase.
+phase_status() {
+    [[ -n "${PHASE_STATUS_FILE:-}" ]] || return 0
+    printf '%s' "$*" > "${PHASE_STATUS_FILE}"
 }
 
 # phase_export <NAME> <value>
@@ -207,7 +345,7 @@ spinner_wait() {
 # the assignment is replayed into the caller once that job finishes.
 phase_export() {
     [[ -n "${PHASE_VARS_FILE:-}" ]] || return 0
-    printf '%s=%q\n' "$1" "$2" >> "$PHASE_VARS_FILE"
+    printf '%s=%q\n' "$1" "$2" >> "${PHASE_VARS_FILE}"
 }
 
 # run_phase_with_spinner <label> <log_file> <function> [args...]
@@ -219,17 +357,18 @@ phase_export() {
 # without opening the log file.
 run_phase_with_spinner() {
     local label="$1" log="$2"; shift 2
-    mkdir -p "$(dirname "$log")"
-    local vars_file; vars_file="$(mktemp)"
-    PHASE_VARS_FILE="$vars_file" "$@" > "$log" 2>&1 &
+    mkdir -p "$(dirname "${log}")"
+    local vars_file status_file; vars_file="$(mktemp)"; status_file="$(mktemp)"
+    PHASE_VARS_FILE="${vars_file}" PHASE_STATUS_FILE="${status_file}" "$@" > "${log}" 2>&1 &
     local pid=$!
-    spinner_wait "$label" "$pid"
+    spinner_wait "${label}" "${pid}" "${status_file}"
     local rc=$?
-    [[ -s "$vars_file" ]] && source "$vars_file"
-    rm -f "$vars_file"
-    if [[ $rc -ne 0 ]]; then
-        log_err "$label FAILED - see $log"
-        tail -n 40 "$log" >&2
+    # shellcheck source=/dev/null  # generated at runtime
+    [[ -s "${vars_file}" ]] && source "${vars_file}"
+    rm -f "${vars_file}" "${status_file}"
+    if [[ ${rc} -ne 0 ]]; then
+        log_err "${label} FAILED - see ${log}"
+        tail -n 40 "${log}" >&2
     fi
-    return $rc
+    return "${rc}"
 }
