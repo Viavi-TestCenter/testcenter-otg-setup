@@ -523,5 +523,190 @@ class ComposeProvisionedConflict(unittest.TestCase):
         self.assertEqual(run("physical_ex2.yaml", "access").rc, 0)
 
 
+class TopologyValidation(unittest.TestCase):
+    """The few topology rules the supported pretest/smoke-test workflow depends on. Errors name the
+    config path and value; they apply from --gen-config on (scope full), i.e. before pytest starts."""
+
+    @staticmethod
+    def cfg(fn=None):
+        def apply(c):
+            if fn:
+                fn(c["testbed"])
+        return mutated("virtual_full.yaml", apply)
+
+    @staticmethod
+    def links(*entries):
+        def fn(tb):
+            tb["dut"]["links"] = [dict(bandwidth=40000, **e) for e in entries]
+        return fn
+
+    def rejected(self, fn, scope="full"):
+        r = run(self.cfg(fn), scope)
+        self.assertEqual(r.rc, 1, r.stderr)
+        self.assertEqual(r.vars, {}, "a rejected config must print no CFG_* assignments")
+        return r.stderr
+
+    def errors(self, err):
+        return [line for line in err.splitlines() if line.startswith("  - ")]
+
+    # ---- valid
+    def test_valid_two_link_config_passes(self):
+        r = run(self.cfg(), "full")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual(r.vars["CFG_DUT_LINKS_COUNT"], "2")
+
+    def test_more_than_two_unique_links_pass(self):
+        fn = self.links(
+            dict(dut_port="Ethernet0", stc_port="Card1/Port1", vlan_id=1000),
+            dict(dut_port="Ethernet4", stc_port="Card1/Port2", vlan_id=1000),
+            dict(dut_port="Ethernet8", stc_port="Card1/Port3", vlan_id=1000),
+        )
+        r = run(self.cfg(fn), "full")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual(r.vars["CFG_DUT_LINKS_COUNT"], "3")
+
+    def test_tgen_prefix_variants_pass(self):
+        for name in ("tgen_ptf32", "tgen-t0-3", "tgen"):
+            with self.subTest(name=name):
+                r = run(self.cfg(lambda tb, n=name: tb["topology"].update(name=n)), "full")
+                self.assertEqual(r.rc, 0, r.stderr)
+
+    # ---- minimum link count
+    def test_one_link_is_rejected(self):
+        err = self.rejected(self.links(dict(dut_port="Ethernet0", stc_port="Card1/Port1", vlan_id=1000)))
+        self.assertIn("At least two testbed.dut.links entries are required by the smoke-test workflow", err)
+        self.assertIn("found 1", err)
+
+    def test_no_links_is_rejected(self):
+        err = self.rejected(self.links())
+        self.assertIn("At least two testbed.dut.links entries are required by the smoke-test workflow", err)
+        self.assertIn("found 0", err)
+
+    # ---- VLAN consistency
+    def test_vlan_tag_differing_from_id_is_rejected_with_both_paths_and_values(self):
+        err = self.rejected(lambda tb: tb["topology"]["vlan"].update(tag=2000))
+        self.assertIn("testbed.topology.vlan.id = 1000", err)
+        self.assertIn("testbed.topology.vlan.tag = 2000", err)
+        self.assertNotIn("testbed.dut.links[0].vlan_id", err)   # only the conflicting paths
+        self.assertIn("one VLAN", err)
+
+    def test_link_vlan_differing_from_topology_vlan_is_rejected(self):
+        def fn(tb):
+            tb["dut"]["links"][1]["vlan_id"] = 2000
+        err = self.rejected(fn)
+        self.assertIn("testbed.topology.vlan.id = 1000", err)
+        self.assertIn("testbed.dut.links[1].vlan_id = 2000", err)
+        self.assertNotIn("testbed.dut.links[0].vlan_id", err)
+
+    def test_every_conflicting_path_is_listed_in_one_error(self):
+        def fn(tb):
+            tb["topology"]["vlan"]["tag"] = 2000
+            tb["dut"]["links"][0]["vlan_id"] = 3000
+        err = self.rejected(fn)
+        for want in ("testbed.topology.vlan.id = 1000", "testbed.topology.vlan.tag = 2000", "testbed.dut.links[0].vlan_id = 3000"):
+            self.assertIn(want, err)
+        self.assertNotIn("testbed.dut.links[1].vlan_id", err)
+        self.assertEqual(len(self.errors(err)), 1, err)
+
+    def test_changing_the_vlan_everywhere_is_consistent(self):
+        def fn(tb):
+            tb["topology"]["vlan"].update(id=2000, tag=2000)
+            for link in tb["dut"]["links"]:
+                link["vlan_id"] = 2000
+        self.assertEqual(run(self.cfg(fn), "full").rc, 0)
+
+    def test_wrongly_typed_vlan_values_get_a_type_error_not_a_vlan_conflict(self):
+        err = self.rejected(lambda tb: tb["topology"]["vlan"].update(tag="1000"))
+        self.assertIn("testbed.topology.vlan.tag must be of type int", err)
+        self.assertNotIn("one VLAN", err)
+
+    # ---- duplicate ports
+    def test_duplicate_dut_port_is_rejected(self):
+        def fn(tb):
+            tb["dut"]["links"][1]["dut_port"] = "Ethernet0"
+        err = self.rejected(fn)
+        self.assertIn('testbed.dut.links[1].dut_port ("Ethernet0") is also testbed.dut.links[0].dut_port', err)
+        self.assertIn("each DUT port can be cabled to one STC port only", err)
+
+    def test_duplicate_stc_port_is_rejected(self):
+        def fn(tb):
+            tb["dut"]["links"][1]["stc_port"] = "Card1/Port1"
+        err = self.rejected(fn)
+        self.assertIn('testbed.dut.links[1].stc_port ("Card1/Port1") is also testbed.dut.links[0].stc_port', err)
+        self.assertIn("each STC port can be cabled to one DUT port only", err)
+
+    def test_duplicates_are_found_among_more_than_two_links(self):
+        fn = self.links(
+            dict(dut_port="Ethernet0", stc_port="Card1/Port1", vlan_id=1000),
+            dict(dut_port="Ethernet4", stc_port="Card1/Port2", vlan_id=1000),
+            dict(dut_port=" Ethernet0 ", stc_port="Card1/Port3", vlan_id=1000),
+        )
+        self.assertIn('testbed.dut.links[2].dut_port ("Ethernet0") is also testbed.dut.links[0].dut_port', self.rejected(fn))
+
+    def test_duplicate_detection_ignores_surrounding_spaces_on_either_entry(self):
+        fn = self.links(
+            dict(dut_port=" Ethernet0 ", stc_port="Card1/Port1", vlan_id=1000),
+            dict(dut_port="Ethernet0", stc_port="Card1/Port2", vlan_id=1000),
+        )
+        self.assertIn('testbed.dut.links[1].dut_port ("Ethernet0") is also testbed.dut.links[0].dut_port', self.rejected(fn))
+
+    def test_a_dut_port_and_an_stc_port_with_the_same_text_are_not_duplicates(self):
+        fn = self.links(
+            dict(dut_port="Ethernet0", stc_port="Ethernet4", vlan_id=1000),
+            dict(dut_port="Ethernet4", stc_port="Ethernet0", vlan_id=1000),
+        )
+        self.assertEqual(run(self.cfg(fn), "full").rc, 0)
+
+    # ---- topology name
+    def test_topology_name_without_tgen_prefix_is_rejected(self):
+        err = self.rejected(lambda tb: tb["topology"].update(name="ptf32_snappi"))
+        self.assertIn('testbed.topology.name ("ptf32_snappi") must start with "tgen"', err)
+        self.assertIn("sonic-mgmt derives the topology type from this name", err)
+
+    def test_topology_name_prefix_is_case_sensitive(self):
+        self.assertIn('testbed.topology.name ("Tgen_ptf32") must start with "tgen"',
+                      self.rejected(lambda tb: tb["topology"].update(name="Tgen_ptf32")))
+
+    # ---- scope: all of these are test-stage rules
+    def test_not_enforced_by_deploy_only_or_access_check(self):
+        def fn(tb):
+            tb["topology"]["name"] = "ptf32"
+            tb["topology"]["vlan"]["tag"] = 2000
+            tb["dut"]["links"][1]["dut_port"] = "Ethernet0"
+        for scope in ("deploy", "access"):
+            with self.subTest(scope=scope):
+                self.assertEqual(run(self.cfg(fn), scope).rc, 0)
+
+    def test_show_config_reports_them_as_warnings(self):
+        r = run(self.cfg(lambda tb: tb["topology"].update(name="ptf32")), "show")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertIn("must start with", r.stderr)
+
+    def test_all_problems_are_reported_together(self):
+        def fn(tb):
+            tb["topology"]["name"] = "ptf32"
+            tb["topology"]["vlan"]["tag"] = 2000
+            tb["dut"]["links"][1]["dut_port"] = "Ethernet0"
+            tb["dut"]["links"][1]["stc_port"] = "Card1/Port1"
+        err = self.rejected(fn)
+        self.assertEqual(len(self.errors(err)), 4, err)
+
+    # ---- what is deliberately NOT checked
+    def test_port_naming_speed_and_inventory_are_not_validated(self):
+        def fn(tb):
+            tb["dut"]["iface_speed"] = "100000"          # not matched against link bandwidth
+            tb["dut"]["total_ports"] = 4                 # not matched against the ports used
+            tb["dut"]["links"] = [
+                dict(dut_port="Ethernet1", stc_port="Card1/Port1", bandwidth=10000, vlan_id=1000),   # not Ethernet{4*i}
+                dict(dut_port="Ethernet77", stc_port="Card9/Port9", bandwidth=25000, vlan_id=1000),
+            ]
+        r = run(self.cfg(fn), "full")
+        self.assertEqual(r.rc, 0, r.stderr)
+
+    def test_unusual_hwsku_is_not_validated(self):
+        r = run(mutated("virtual_full.yaml", lambda c: c["deployment"]["dut_vs"].update(hwsku="Anything-X1")), "full")
+        self.assertEqual(r.rc, 0, r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

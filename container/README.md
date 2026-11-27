@@ -175,11 +175,16 @@ testbed:
 ```
 
 **3. Describe the cabling and run the tests.** Set `testbed.dut.iface_speed`, `total_ports`
-and `links` (at least 2 DUT-to-STC links) to match your hardware, then:
+and `links` to match your hardware, then:
 
 ```bash
 ./run_snappi_test.sh --smoke-test      # or --pretest
 ```
+
+Before any test starts, the tool rejects a testbed it cannot run: fewer than 2 `links`, a
+`dut_port` or `stc_port` used twice, a VLAN that differs between `testbed.topology.vlan.id`,
+`vlan.tag` and the links' `vlan_id`, or a `testbed.topology.name` that does not start with
+`tgen`. The error names each path and value. Nothing else about the cabling is checked.
 
 `./run_snappi_test.sh --validate` lists any `testbed:` keys that are still missing.
 
@@ -423,7 +428,7 @@ When something fails, the message names the `config.yaml` key to check. `--valid
 | `A container named 'labserver'/'otg' already exists` | A container from elsewhere is in the way. The tool never removes it. Remove it yourself, or mark it `provisioned` and add its address to `testbed.endpoints` |
 | `host port ... is already in use` | Another process uses the port. Run `--destroy`, free the port, re-run |
 | Labserver cannot connect to the chassis or reserve ports | Check that `deployment.stc.version` equals the chassis version, that the Labserver can reach the chassis, and that it is licensed |
-| `This test requires at least 2 ports`, or the test hangs on ARP | Check that `testbed.dut.links` has 2 or more entries and the VLAN matches the DUT. Push the minigraph again (`--deploy-mg`) after changing topology |
+| `This test requires at least 2 ports`, or the test hangs on ARP | Check that the VLAN matches the DUT (`testbed.dut.links` itself is checked for 2 or more entries). Push the minigraph again (`--deploy-mg`) after changing topology |
 | `DUT ... SSH port not reachable after redeploy` | A newly published `sonic-vs` image can be bad. Load a known-good image and set it in `deployment.dut_vs.image` |
 | `Configuration has changed since the environment was deployed` | You changed a deployment setting after `--deploy-only`. Run `--deploy-only` again, or restore the old value |
 | `No deployment record found` | Nothing has been deployed yet, the last deploy did not finish, or the environment was deployed by an older version of this tool or removed with `--destroy`. Run `--deploy-only` |

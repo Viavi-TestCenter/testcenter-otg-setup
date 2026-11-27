@@ -297,7 +297,11 @@ testbed:
     iface_speed: "40000"          # always testbed; iface_speed, total_ports and links are REQUIRED from --gen-config
     total_ports: 32               # full front-panel port count of the platform (topology port range,
                                   # independent of how many ports are actually cabled below)
-    links:                        # DUT <-> STC front-panel cabling; at least 2 entries required for the smoke test
+    links:                        # DUT <-> STC front-panel cabling. Checked from --gen-config on (an error):
+                                  #   - at least 2 entries (the smoke test needs 2 ports; more are fine)
+                                  #   - no dut_port and no stc_port used twice
+                                  #   - every vlan_id equal to testbed.topology.vlan.id (one VLAN carries all ports)
+                                  # Port names, bandwidth and total_ports are NOT checked against each other.
       - dut_port: Ethernet0
         stc_port: Card1/Port1
         bandwidth: 40000
@@ -339,15 +343,16 @@ testbed:
     server_group: "Server_6"
 
   topology:
-    name: "tgen_ptf32"            # MUST start with "tgen" (sonic-mgmt derives the testbed type from the name
-                                  # prefix; the snappi tests are marked topology('tgen')). The bundled patch
+    name: "tgen_ptf32"            # MUST start with "tgen" (an error otherwise: sonic-mgmt derives the testbed
+                                  # type from the name prefix; the snappi tests are marked topology('tgen')). The bundled patch
                                   # (snappi-stc-patch-v0.1.patch) is written for this exact topology name.
     dut_type: "ToRRouter"
     vlan:                         # These values become the DUT's VLAN ONLY when a minigraph is pushed (virtual
                                   # DUT, --deploy-mg or deploy_minigraph: true). The tests read the VLAN from the
                                   # DUT itself, so with a physical DUT and no push they must already match what
                                   # you configured on the switch.
-      id: 1000                    # keep equal to testbed.dut.links[].vlan_id and to tag; the customized
+      id: 1000                    # must equal tag and every testbed.dut.links[].vlan_id (an error otherwise,
+                                  # the conflicting paths and values are listed); the customized
                                   # conftest also assumes "Vlan1000"
       prefix: "192.168.100.1/24"  # on a physical DUT with a push: must not clash with your lab networks
       prefix_v6: "fc02:1000::1/64"

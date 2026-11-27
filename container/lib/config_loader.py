@@ -485,9 +485,11 @@ def resolve(cfg, scope, rep):
     out["CFG_DUT_TOTAL_PORTS"] = total_ports if isinstance(total_ports, int) else ""
     links = req(rep, cfg, "testbed.dut.links", list, level=2)
     n_links = 0
+    link_vlans = []        # (index, vlan_id) of every link with a valid vlan_id, for the VLAN check below
+    seen_ports = {"dut_port": {}, "stc_port": {}}   # port -> index of the first link using it
     if isinstance(links, list):
         if len(links) < 2:
-            E("testbed.dut.links must contain at least 2 entries (the smoke test requires >= 2 ports)", 2)
+            E(f"At least two testbed.dut.links entries are required by the smoke-test workflow (found {len(links)}).", 2)
         for i, link in enumerate(links):
             if not isinstance(link, dict):
                 E(f"testbed.dut.links[{i}] must be a mapping", 2)
@@ -496,9 +498,19 @@ def resolve(cfg, scope, rep):
                 v = link.get(k, "")
                 if not isinstance(v, str) or not v.strip():
                     E(f"testbed.dut.links[{i}].{k} must be a non-empty string", 2)
+                elif v.strip() in seen_ports[k]:
+                    first = seen_ports[k][v.strip()]
+                    side = "DUT" if k == "dut_port" else "STC"
+                    other = "STC" if k == "dut_port" else "DUT"
+                    E(f'testbed.dut.links[{i}].{k} ("{v.strip()}") is also testbed.dut.links[{first}].{k}: '
+                      f"each {side} port can be cabled to one {other} port only", 2)
+                else:
+                    seen_ports[k][v.strip()] = i
             for k in ("bandwidth", "vlan_id"):
                 if not is_int(link.get(k)):
                     E(f"testbed.dut.links[{i}].{k} must be an integer", 2)
+            if is_int(link.get("vlan_id")):
+                link_vlans.append((i, link["vlan_id"]))
             out[f"CFG_DUT_LINK_{i}_DUT_PORT"] = link.get("dut_port", "")
             out[f"CFG_DUT_LINK_{i}_STC_PORT"] = link.get("stc_port", "")
             out[f"CFG_DUT_LINK_{i}_BANDWIDTH"] = link.get("bandwidth", "")
@@ -559,6 +571,10 @@ def resolve(cfg, scope, rep):
     out["CFG_TESTBED_DUT_GROUP"] = req(rep, cfg, "testbed.definition.dut_group_name", str, nonempty=True, level=2) or ""
     out["CFG_TESTBED_SERVER_GROUP"] = req(rep, cfg, "testbed.definition.server_group", str, nonempty=True, level=2) or ""
     out["CFG_TOPO_NAME"] = req(rep, cfg, "testbed.topology.name", str, nonempty=True, level=2) or ""
+    if out["CFG_TOPO_NAME"].strip() and not out["CFG_TOPO_NAME"].startswith("tgen"):
+        E(f'testbed.topology.name ("{out["CFG_TOPO_NAME"]}") must start with "tgen": sonic-mgmt derives the topology '
+          'type from this name (tests/common/testbed.py get_testbed_type), and the Snappi tests only run on the '
+          '"tgen" type', 2)
     out["CFG_TOPO_DUT_TYPE"] = req(rep, cfg, "testbed.topology.dut_type", str, nonempty=True, level=2) or ""
     vlan_id = req(rep, cfg, "testbed.topology.vlan.id", int, level=2)
     out["CFG_TOPO_VLAN_ID"] = vlan_id if vlan_id is not None else ""
@@ -566,6 +582,16 @@ def resolve(cfg, scope, rep):
     out["CFG_TOPO_VLAN_PREFIX_V6"] = req(rep, cfg, "testbed.topology.vlan.prefix_v6", str, nonempty=True, level=2) or ""
     tag = req(rep, cfg, "testbed.topology.vlan.tag", int, level=2)
     out["CFG_TOPO_VLAN_TAG"] = tag if tag is not None else ""
+    # One VLAN carries all the cabled ports (topology vlan.id; vlan.tag is the same VLAN's 802.1Q tag,
+    # and every link's vlan_id is its VLAN): all ints, so they are compared as they are. Only the paths
+    # that differ from testbed.topology.vlan.id are listed. A wrongly typed value was already reported.
+    if vlan_id is not None:
+        differing = [("testbed.topology.vlan.tag", tag)] if tag is not None and tag != vlan_id else []
+        differing += [(f"testbed.dut.links[{i}].vlan_id", v) for i, v in link_vlans if v != vlan_id]
+        if differing:
+            E("VLAN values are inconsistent: the supported workflow uses one VLAN, so these must be equal:\n"
+              f"    testbed.topology.vlan.id = {vlan_id}\n"
+              + "\n".join(f"    {path} = {value}" for path, value in differing), 2)
     out["CFG_TOPO_VLAN_MAC"] = req(rep, cfg, "testbed.topology.vlan.mac", str, nonempty=True, level=2) or ""
 
     # ---- testbed.deploy_minigraph: auto | true | false
