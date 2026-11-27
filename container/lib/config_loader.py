@@ -256,6 +256,21 @@ def resolve(cfg, scope, rep):
     dc_enabled = opt(rep, cfg, "deployment.otg_labserver.docker_compose.enabled", bool, True)
     host_ip_cfg = opt(rep, cfg, "deployment.otg_labserver.host_ip", str, "")
     if dc_enabled:
+        # docker-compose deploys BOTH services on this host, so a service explicitly declared
+        # provisioned would be silently ignored while a local stack is deployed instead: reject it.
+        # (mode: standalone, or no mode key, is merely inactive here and stays allowed.)
+        provisioned = [
+            (comp, label) for comp, label in (("labserver", "Labserver"), ("otg_service", "OTG service"))
+            if str(get(cfg, f"deployment.otg_labserver.{comp}.mode", "")).strip().lower() == "provisioned"
+        ]
+        if provisioned:
+            default = "" if get(cfg, "deployment.otg_labserver.docker_compose.enabled") is not None else " (default)"
+            names = " / ".join(label for _, label in provisioned)
+            fix = "a provisioned " + names if len(provisioned) == 1 else "provisioned services"
+            E("Invalid configuration:\n"
+              f"    deployment.otg_labserver.docker_compose.enabled is true{default}\n"
+              + "".join(f'    deployment.otg_labserver.{comp}.mode is "provisioned"\n' for comp, _ in provisioned)
+              + f"    Set docker_compose.enabled to false to use {fix}.")
         lab_mode = otg_mode = "docker-compose"
         keep = opt(rep, cfg, "deployment.otg_labserver.docker_compose.keep_build_image", bool, True)
         for comp in ("labserver", "otg_service"):

@@ -207,6 +207,10 @@ testbed:
     otg_service: { ip: "10.0.0.22", port: 50051 }
 ```
 
+`docker_compose: { enabled: false }` is required here. With `enabled: true` (the default) the
+tool deploys both services itself, so a `provisioned` mode next to it is rejected as a
+configuration error instead of being ignored.
+
 The tool never deploys, changes or removes a `provisioned` component. You can mix the two:
 with `otg_service: { mode: standalone }` the tool deploys its own OTG service against the
 existing Labserver (omit `otg_service` under `testbed.endpoints`, but `labserver_ip` must be
@@ -299,7 +303,7 @@ The tool remembers a successful push, and forgets it when it can no longer apply
 | `deployment.stc.version` | STC version; picks the chassis, Labserver and OTG files in `images/` |
 | `deployment.stc.license_server` | License server for the Labserver and virtual chassis |
 | `deployment.images.dir` | Folder holding the VIAVI files (default `./images`) |
-| `deployment.otg_labserver.docker_compose.enabled` | `true` (default): deploy Labserver and OTG service together. `false`: choose `standalone` or `provisioned` for each |
+| `deployment.otg_labserver.docker_compose.enabled` | `true` (default): deploy Labserver and OTG service together. `false`: choose `standalone` or `provisioned` for each (`provisioned` with `true` is an error) |
 | `deployment.otg_labserver.host_ip` | This host's address. Leave empty unless auto-detection picks the wrong network interface |
 | `deployment.dut_vs.image` | Virtual DUT image (default `vrnetlab/sonic_sonic-vs:master`) |
 | `deployment.sonic_mgmt.source_dir` | Empty: the tool clones sonic-mgmt. Set it to reuse your own checkout |

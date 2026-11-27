@@ -94,7 +94,10 @@ deployment:
                                   #        testcenter-otg-setup docker-compose stack (it uses the checkout this
                                   #        container solution itself ships inside, one directory up from
                                   #        container/, directly - no separate clone); the two modes below are
-                                  #        not used (a "set but ignored" line is logged).
+                                  #        not used (a "set but ignored" line is logged). Combining true
+                                  #        with a mode of "provisioned" below is an ERROR (the service would
+                                  #        be deployed here anyway): set enabled: false to use a provisioned
+                                  #        Labserver or OTG service.
                                   # false: each component follows its own mode below.
       keep_build_image: true      # only used when enabled: true. --destroy keeps the OTG image built for
                                   # this stack (otg:latest) and removes only the containers, so the next deploy
@@ -102,7 +105,8 @@ deployment:
                                   # forcing a rebuild next time. Never affects labserver images (cached VIAVI
                                   # artifacts, not build output).
     labserver:
-      mode: standalone            # used only when docker_compose.enabled: false
+      mode: standalone            # used only when docker_compose.enabled: false ("provisioned" with
+                                  # enabled: true is rejected, see above)
                                   #   standalone  : docker run on THIS host
                                   #   provisioned : already exists elsewhere; never deployed or destroyed.
                                   #                 Same meaning as target: physical for the chassis and DUT.

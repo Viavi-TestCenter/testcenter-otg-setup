@@ -409,5 +409,119 @@ class LinkCountAndAllure(unittest.TestCase):
         self.assertIn("testbed.reporting.allure_project_id", r.stderr)
 
 
+class ComposeProvisionedConflict(unittest.TestCase):
+    """docker_compose.enabled: true deploys BOTH services, so a service explicitly marked
+    provisioned would be silently ignored while a local stack is deployed: rejected up front."""
+    ENABLED = "deployment.otg_labserver.docker_compose.enabled is true"
+    LAB = 'deployment.otg_labserver.labserver.mode is "provisioned"'
+    OTG = 'deployment.otg_labserver.otg_service.mode is "provisioned"'
+
+    @staticmethod
+    def compose(**modes):
+        def fn(c):
+            og = c["deployment"]["otg_labserver"]
+            og["docker_compose"] = {"enabled": True, "keep_build_image": True}
+            for comp, mode in modes.items():
+                og[comp] = {"mode": mode}
+        return mutated("virtual_full.yaml", fn)
+
+    def rejected(self, cfg, scope="full"):
+        r = run(cfg, scope)
+        self.assertEqual(r.rc, 1, r.stderr)
+        self.assertEqual(r.vars, {}, "a rejected config must print no CFG_* assignments")
+        return r.stderr
+
+    def test_shipped_defaults_are_allowed(self):
+        # the shipped file carries mode: standalone under compose; present but inactive is fine
+        shipped = os.path.abspath(ShippedConfig.SHIPPED)
+        for scope in ("deploy", "access", "full", "show"):
+            with self.subTest(scope=scope):
+                self.assertEqual(run(shipped, scope).rc, 0)
+        with open(shipped) as f:
+            cfg = yaml.safe_load(f)
+        og = cfg["deployment"]["otg_labserver"]
+        self.assertTrue(og["docker_compose"]["enabled"])
+        self.assertEqual((og["labserver"]["mode"], og["otg_service"]["mode"]), ("standalone", "standalone"))
+
+    def test_compose_with_no_mode_keys_is_allowed(self):
+        self.assertEqual(run("virtual_full.yaml").rc, 0)
+
+    def test_compose_with_standalone_modes_is_allowed(self):
+        r = run(self.compose(labserver="standalone", otg_service="standalone"))
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual((r.vars["CFG_LABSERVER_MODE"], r.vars["CFG_OTG_MODE"]), ("docker-compose", "docker-compose"))
+
+    def test_compose_with_provisioned_labserver_is_rejected(self):
+        err = self.rejected(self.compose(labserver="provisioned"))
+        self.assertIn(self.ENABLED, err)
+        self.assertIn(self.LAB, err)
+        self.assertNotIn(self.OTG, err)
+        self.assertIn("Set docker_compose.enabled to false to use a provisioned Labserver.", err)
+
+    def test_compose_with_provisioned_otg_is_rejected(self):
+        err = self.rejected(self.compose(otg_service="provisioned"))
+        self.assertIn(self.ENABLED, err)
+        self.assertIn(self.OTG, err)
+        self.assertNotIn(self.LAB, err)
+        self.assertIn("Set docker_compose.enabled to false to use a provisioned OTG service.", err)
+
+    def test_compose_with_both_provisioned_is_rejected_once_naming_both(self):
+        err = self.rejected(self.compose(labserver="provisioned", otg_service="provisioned"))
+        self.assertIn(self.ENABLED, err)
+        self.assertIn(self.LAB, err)
+        self.assertIn(self.OTG, err)
+        self.assertIn("Set docker_compose.enabled to false to use provisioned services.", err)
+        self.assertEqual(err.count("  - "), 1, err)
+
+    def test_compose_default_on_is_named_as_the_default(self):
+        # no docker_compose key at all: enabled defaults to true, so the conflict is just as real
+        def fn(c):
+            og = c["deployment"]["otg_labserver"]
+            og.pop("docker_compose", None)
+            og["labserver"] = {"mode": "provisioned"}
+        err = self.rejected(mutated("virtual_full.yaml", fn))
+        self.assertIn(self.ENABLED + " (default)", err)
+        self.assertIn(self.LAB, err)
+
+    def test_rejected_in_every_scope(self):
+        cfg = self.compose(labserver="provisioned")
+        for scope in ("deploy", "access", "full", "show"):
+            with self.subTest(scope=scope):
+                self.assertIn(self.LAB, self.rejected(cfg, scope))
+
+    def test_mode_spelling_does_not_hide_the_conflict(self):
+        self.assertIn(self.LAB, self.rejected(self.compose(labserver=" Provisioned ")))
+
+    def test_the_conflict_is_the_only_error(self):
+        # the config is otherwise valid: nothing else (e.g. missing testbed.endpoints addresses
+        # for the "provisioned" service) is reported on top of it
+        err = self.rejected(self.compose(labserver="provisioned", otg_service="provisioned"))
+        self.assertNotIn("testbed.endpoints", err)
+        self.assertEqual(err.count("  - "), 1, err)
+
+    def test_compose_disabled_with_provisioned_services_is_allowed(self):
+        for scope in ("deploy", "access"):   # the fixture has no full testbed: section
+            with self.subTest(scope=scope):
+                r = run("physical_ex3.yaml", scope)
+                self.assertEqual(r.rc, 0, r.stderr)
+        v = run("physical_ex3.yaml", "access").vars
+        self.assertEqual((v["CFG_LABSERVER_MODE"], v["CFG_OTG_MODE"]), ("provisioned", "provisioned"))
+
+    def test_compose_disabled_with_provisioned_services_on_a_virtual_lab_is_allowed(self):
+        def fn(c):
+            c["deployment"]["otg_labserver"] = {
+                "docker_compose": {"enabled": False},
+                "labserver": {"mode": "provisioned"},
+                "otg_service": {"mode": "provisioned"},
+            }
+            c["testbed"]["endpoints"] = {"labserver_ip": "10.0.0.21", "otg_service": {"ip": "10.0.0.22", "port": 50051}}
+        r = run(mutated("virtual_full.yaml", fn), "full")
+        self.assertEqual(r.rc, 0, r.stderr)
+        self.assertEqual((r.vars["CFG_LABSERVER_MODE"], r.vars["CFG_OTG_MODE"]), ("provisioned", "provisioned"))
+
+    def test_compose_disabled_with_mixed_modes_is_allowed(self):
+        self.assertEqual(run("physical_ex2.yaml", "access").rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
