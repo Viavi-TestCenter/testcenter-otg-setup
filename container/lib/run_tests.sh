@@ -67,6 +67,35 @@ warn_deploy_mg_stale() {
     log_detail "Run --deploy-mg before running tests that require the updated DUT configuration."
 }
 
+# Will this run push the minigraph? --deploy-mg always does; full and --test-only whenever
+# testbed.deploy_minigraph resolves to true (always on a virtual lab under auto, never on a physical
+# one); --pretest/--smoke-test only when that is true AND no push is recorded for the current settings.
+# Every other mode never pushes.
+deploy_mg_needed() {
+    case "${MODE}" in
+        deploy-mg) return 0 ;;
+        full|test-only) [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] ;;
+        pretest|smoke-test) [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && ! deploy_mg_done_valid ;;
+        *) return 1 ;;
+    esac
+}
+
+# A push replaces a PHYSICAL DUT's running configuration: this run must have been given --yes. No prompt
+# (a CI or scripted run cannot answer one); without the flag the run stops here, and the callers place
+# this before anything touches the DUT. A virtual DUT is recreated by the deploy anyway: no confirmation.
+# --yes confirms this replacement only; configuration validation and the access check still run.
+require_physical_dut_confirmation() {
+    [[ "${CFG_TARGET}" == "physical" ]] || return 0
+    deploy_mg_needed || return 0
+    [[ "${ASSUME_YES:-0}" == "1" ]] && return 0
+    local cmd="./run_snappi_test.sh" arg
+    for arg in ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; do cmd+=" $(printf '%q' "${arg}")"; done
+    log_err "Minigraph deployment will replace the running configuration of physical DUT \"${CFG_DUT_HOSTNAME}\"."
+    log_detail "Nothing on the DUT has been changed. Re-run with --yes to confirm:"
+    _log "           ${cmd} --yes" >&2
+    exit 1
+}
+
 phase_deploy_mg() {
     log_step "Deploying minigraph to DUT (deploy-mg)"
     mkdir -p "${LOG_DIR}"

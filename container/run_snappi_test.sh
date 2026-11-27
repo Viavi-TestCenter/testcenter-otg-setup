@@ -41,7 +41,7 @@
 #                          with a warning if the sonic-mgmt container is not running.
 #   --deploy-mg           Stage 4. Run stages 2-3, then push the generated minigraph. Always
 #                          pushes, whatever testbed.deploy_minigraph says. On a physical DUT this
-#                          REPLACES its running configuration.
+#                          REPLACES its running configuration, so it needs --yes.
 #   --pretest             Run only the pretest against an already-deployed environment (stages
 #                          2-3 first). The minigraph is pushed first only when
 #                          testbed.deploy_minigraph resolves to true AND no push is recorded as
@@ -52,6 +52,13 @@
 #                          push (only when testbed.deploy_minigraph resolves to true), pretest and
 #                          smoke test against what is already running.
 #   --validate            Validate the whole config.yaml (deployment: and testbed:) and exit.
+#   --yes                 Confirm the replacement of the running configuration of a physical DUT.
+#                          With deployment.target: physical, every command that pushes the minigraph
+#                          (--deploy-mg, a full run or test mode with testbed.deploy_minigraph: true)
+#                          stops before it touches the DUT unless --yes is given. There is no prompt,
+#                          so scripted and CI runs are unaffected otherwise. --yes confirms only this;
+#                          configuration validation and the access check still apply. Not needed
+#                          for a virtual DUT, nor when nothing would be pushed.
 #   --no-cleanup          Skip the post-test pytest/ansible cache cleanup. Only affects
 #                          cache state, never deployed services (see --destroy for that).
 #   --destroy             Remove only resources this tool itself created (see the
@@ -70,6 +77,7 @@
 #   -h, --help             Show this help and exit
 set -uo pipefail
 
+ORIG_ARGS=("$@")     # shown in the "re-run with --yes" hint
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
@@ -77,6 +85,7 @@ CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 MODE="full"          # full | deploy-only | access-check | gen-config | deploy-mg | pretest | smoke-test | test-only | validate | destroy | show-config | list-versions
 SKIP_ENV_CHECK=0
 NO_CLEANUP=0
+ASSUME_YES=0
 
 usage() { sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/!p}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -92,6 +101,7 @@ while [[ $# -gt 0 ]]; do
         --smoke-test) MODE="smoke-test"; shift ;;
         --test-only) MODE="test-only"; shift ;;
         --validate) MODE="validate"; shift ;;
+        --yes) ASSUME_YES=1; shift ;;
         --no-cleanup) NO_CLEANUP=1; shift ;;
         --destroy) MODE="destroy"; shift ;;
         --show-config) MODE="show-config"; shift ;;
@@ -249,6 +259,10 @@ run_stages() {
 
     print_run_config
 
+    # A full run would deploy before it reaches the access check, so the confirmation is asked for
+    # here, before any of it. Every other mode asks at stage 2, after its read-only checks.
+    [[ "${MODE}" == "full" ]] && require_physical_dut_confirmation
+
     # ----------------------------------------------- stage 1: infra + deploy ---
     if [[ "${MODE}" == "full" || "${MODE}" == "deploy-only" ]]; then
         phase_check_version_change
@@ -324,6 +338,10 @@ run_stages() {
         *) ;;
     esac
 
+    # Before the access check: on a physical DUT that step also writes the SSH key, and nothing on the
+    # DUT may change when the replacement of its configuration has not been confirmed (--yes).
+    require_physical_dut_confirmation
+
     run_access_step
 
     if [[ "${MODE}" == "access-check" ]]; then
@@ -343,18 +361,10 @@ run_stages() {
     # when the minigraph-relevant settings changed - see deploy_mg_done_valid).
     # A physical DUT under "auto" is never pushed to automatically.
     NEED_DEPLOY_MG=0
-    case "${MODE}" in
-        deploy-mg) NEED_DEPLOY_MG=1 ;;
-        full|test-only)
-            [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && NEED_DEPLOY_MG=1 ;;
-        pretest|smoke-test)
-            if [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && ! deploy_mg_done_valid; then
-                NEED_DEPLOY_MG=1
-            fi ;;
-        *) ;;  # other modes never push a minigraph implicitly
-    esac
+    deploy_mg_needed && NEED_DEPLOY_MG=1
 
     if [[ "${NEED_DEPLOY_MG}" -eq 1 ]]; then
+        require_physical_dut_confirmation   # the same check, immediately before the DUT is modified
         if phase_deploy_mg; then
             record_phase "deploy-mg" "${RESULT_DEPLOY_MG}"
         else

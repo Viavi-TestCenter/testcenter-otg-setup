@@ -67,6 +67,7 @@ run_stage() {
         CFG_CLEANUP_ENV_ON_FAILURE=0
         STATE_FILE="${STATE}"; SONIC_MGMT_DIR="${TMP}/sonic-mgmt"; LOG_DIR="${TMP}/logs"
         NO_CLEANUP=0; SKIP_ENV_CHECK=1
+        ASSUME_YES=1   # these tests are about the recorded state; the confirmation is in test_physical_confirm.sh
         RESULT_PRETEST=PASSED; RESULT_SMOKE=PASSED; SUMMARY_PRETEST=""; SUMMARY_SMOKE=""
         STUB_MG=0; MG_EXEC_RC=0; DEPLOY_RC=0
         for assignment in "${overrides[@]}"; do eval "${assignment}"; done

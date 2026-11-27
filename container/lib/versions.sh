@@ -94,7 +94,8 @@ phase_list_versions() {
             row "  Status" "NOT READY - missing $( [[ -z "${stc_file[${CFG_TC_VERSION}]:-}" ]] && echo -n "STC artifact "; [[ -z "${labserver_file[${CFG_TC_VERSION}]:-}" ]] && echo -n "labserver artifact")"
         fi
         if [[ -z "${otg_files[${CFG_TC_OTGSERVICE_VERSION}]:-}" ]]; then
-            row "  OTG service" "no otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh under ${IMAGES_DIR} (only required if the OTG service isn't already reachable/running)"
+            row "  OTG service" "no otgservice.${CFG_TC_OTGSERVICE_VERSION}.*.sh under ${IMAGES_DIR}"
+            row "" "(only required if the OTG service isn't already reachable/running)"
         else
             row "  OTG service" "${otg_files[${CFG_TC_OTGSERVICE_VERSION}]}"
         fi

@@ -38,6 +38,7 @@ run_mode() {
         CFG_CLEANUP_ENV_ON_FAILURE=0
         STATE_FILE="${TMP}/state.env"; SONIC_MGMT_DIR="${TMP}/sonic-mgmt"
         NO_CLEANUP=0; SKIP_ENV_CHECK=0
+        ASSUME_YES=1   # call order only; the physical-DUT confirmation is covered by test_physical_confirm.sh
         RESULT_DEPLOY_MG=PASSED; RESULT_PRETEST=PASSED; RESULT_SMOKE=PASSED
         SUMMARY_PRETEST=""; SUMMARY_SMOKE=""
         for f in phase_check_version_change phase_env_check phase_check_artifacts phase_sonic_mgmt_source \

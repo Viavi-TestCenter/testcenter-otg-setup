@@ -13,8 +13,10 @@ deploy the environment, configure the testbed, push the minigraph, run the tests
 
 > **⚠️ Physical DUT warning.** With `deployment.target: physical` the tool can change your DUT:
 > 1. **Minigraph push (`--deploy-mg`) replaces the switch's running configuration.** It runs
->    only when you ask for it (`--deploy-mg`, or `testbed.deploy_minigraph: true`). Use a
->    dedicated lab DUT and back up its config first.
+>    only when you ask for it (`--deploy-mg`, or `testbed.deploy_minigraph: true`), and only
+>    with `--yes`: **`--yes` confirms that the DUT's running configuration will be replaced.**
+>    Without it the run stops before touching the DUT. There is no prompt, so scripts and CI
+>    behave the same. Use a dedicated lab DUT and back up its config first.
 > 2. **SSH key:** `--access-check` and every test run add the sonic-mgmt public key to the
 >    DUT's `~/.ssh/authorized_keys` if it is missing. Nothing else on the DUT is changed.
 >
@@ -242,7 +244,7 @@ set before `--deploy-only`).
 | `--deploy-only` | Deploy the environment and stop. Reads only `deployment:` |
 | `--access-check` | Check that the chassis, DUT, and any existing Labserver / OTG service are reachable and the DUT login works |
 | `--gen-config` | Regenerate the sonic-mgmt testbed files after you change `config.yaml` |
-| `--deploy-mg` | Push the minigraph to the DUT (always pushes; replaces a physical DUT's configuration) |
+| `--deploy-mg` | Push the minigraph to the DUT (always pushes; replaces a physical DUT's configuration, so a physical DUT needs `--yes`) |
 | `--pretest` | Run only the pretest |
 | `--smoke-test` | Run only the smoke test |
 | `--test-only` | Run pretest and smoke test against the environment that is already deployed |
@@ -269,12 +271,17 @@ this check.
 | `--destroy` | Remove what this tool created ([section 7](#7-re-running-and-cleaning-up)) |
 | `--no-cleanup` | Keep the pytest / Ansible cache after the tests (for debugging) |
 | `--skip-env-check` | Skip the host software check and install |
+| `--yes` | Confirm the replacement of a physical DUT's running configuration by a minigraph push |
 | `-h`, `--help` | Show the built-in help |
 
 **Minigraph.** On a virtual lab it is pushed automatically before the tests (`--pretest` and
 `--smoke-test` skip it if it was already pushed since the last deploy). On a physical DUT it
 is never pushed automatically, unless you set `testbed.deploy_minigraph: true` or run
-`--deploy-mg`.
+`--deploy-mg`, and then only with `--yes`, for example `./run_snappi_test.sh --deploy-mg --yes`.
+Without `--yes` the run stops with that command before the access check or anything else
+touches the DUT (a full run stops before it deploys). `--yes` confirms the replacement of the
+DUT's running configuration and nothing else: validation and the access check still apply. A
+virtual DUT never needs it, and neither does a run that would not push.
 
 The tool remembers a successful push, and forgets it when it can no longer apply:
 
@@ -340,6 +347,12 @@ front.
 | `--gen-config`, `--deploy-mg`, `--pretest`, `--smoke-test`, `--test-only`, full run, `--validate` | All of `testbed:` |
 
 `--show-config` checks the same as a full run but reports `testbed:` problems as warnings.
+
+The deployment and topology checks described in sections 3, 4 and 5 follow the same rule. The
+`docker_compose` / `provisioned` conflict is rejected by every command. The cabling and topology
+checks (2 or more links, unique ports, one VLAN, `tgen` topology name) and the deployment check
+run only for the commands in the last row (`--access-check` and `--deploy-only` skip them), and
+the `--yes` confirmation only for a command that would push the minigraph to a physical DUT.
 
 **sonic-mgmt source, patch and custom tests.** The tests run from a sonic-mgmt checkout:
 
@@ -430,6 +443,10 @@ When something fails, the message names the `config.yaml` key to check. `--valid
 | Labserver cannot connect to the chassis or reserve ports | Check that `deployment.stc.version` equals the chassis version, that the Labserver can reach the chassis, and that it is licensed |
 | `This test requires at least 2 ports`, or the test hangs on ARP | Check that the VLAN matches the DUT (`testbed.dut.links` itself is checked for 2 or more entries). Push the minigraph again (`--deploy-mg`) after changing topology |
 | `DUT ... SSH port not reachable after redeploy` | A newly published `sonic-vs` image can be bad. Load a known-good image and set it in `deployment.dut_vs.image` |
+| `Invalid configuration: ... docker_compose.enabled is true ... mode is "provisioned"` | `docker_compose.enabled: true` deploys both services, so it cannot be combined with a `provisioned` one. Set `docker_compose.enabled: false` to use a provisioned Labserver or OTG service |
+| `VLAN values are inconsistent`, `... is also testbed.dut.links[N]...`, `must start with "tgen"`, `At least two testbed.dut.links entries are required` | The cabling or topology in `testbed:` breaks one of the rules in [section 4](#4-using-your-own-dut-and-stc-chassis). The message lists each path and value. Fix them in `config.yaml` |
+| `Minigraph deployment will replace the running configuration of physical DUT` | The run would push a minigraph to your physical DUT. Nothing was changed. Back up the DUT, then re-run the command shown in the message with `--yes` added |
+| `Testbed configuration changed. Run --deploy-mg ...` | Settings the minigraph is built from changed since the last push. Run `--deploy-mg` (physical DUT: with `--yes`) before tests that need the new DUT configuration |
 | `Configuration has changed since the environment was deployed` | You changed a deployment setting after `--deploy-only`. Run `--deploy-only` again, or restore the old value |
 | `No deployment record found` | Nothing has been deployed yet, the last deploy did not finish, or the environment was deployed by an older version of this tool or removed with `--destroy`. Run `--deploy-only` |
 | Stale results or ignored config changes | Run again without `--no-cleanup`. If that does not help, `--destroy` and re-run |
@@ -456,7 +473,8 @@ If you are stuck, run `--destroy` and start again. That never affects a physical
 ./run_snappi_test.sh --deploy-only     # deploy the environment and stop
 ./run_snappi_test.sh --access-check    # equipment reachable, DUT login works (physical DUT: installs the sonic-mgmt key)
 ./run_snappi_test.sh --gen-config      # regenerate the testbed files after editing config.yaml
-./run_snappi_test.sh --deploy-mg       # push the minigraph (replaces a physical DUT's configuration)
+./run_snappi_test.sh --deploy-mg       # push the minigraph (virtual DUT)
+./run_snappi_test.sh --deploy-mg --yes # same on a physical DUT: --yes confirms replacing its running configuration
 ./run_snappi_test.sh --pretest         # pretest only
 ./run_snappi_test.sh --smoke-test      # smoke test only
 ./run_snappi_test.sh --test-only       # pretest and smoke test on the environment that is already deployed

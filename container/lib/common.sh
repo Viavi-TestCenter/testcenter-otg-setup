@@ -210,8 +210,22 @@ compose_cmd() {
 # Resolve a config-relative path against CONFIG_DIR unless it is absolute.
 resolve_path() {
     local p="$1"
-    [[ "${p}" = /* ]] && { printf '%s' "${p}"; return; }
-    printf '%s' "$(cd "${CONFIG_DIR}" 2>/dev/null && pwd)/${p}"
+    [[ "${p}" = /* ]] || p="$(cd "${CONFIG_DIR}" 2>/dev/null && pwd)/${p}"
+    # Lexical cleanup (no symlink resolution, path need not exist): drops "./", "//",
+    # trailing "/" and folds "x/.." so messages show e.g. .../container/images.
+    if realpath -m -s -- "${p}" 2>/dev/null; then return; fi
+    # Fallback without realpath: same cleanup done in pure bash, so output never differs by host.
+    local out="" seg IFS=/
+    local -a parts=()
+    for seg in ${p}; do
+        case "${seg}" in
+            ""|.) ;;
+            ..) [[ ${#parts[@]} -gt 0 ]] && unset 'parts[${#parts[@]}-1]' ;;
+            *) parts+=("${seg}") ;;
+        esac
+    done
+    for seg in "${parts[@]}"; do out+="/${seg}"; done
+    printf '%s' "${out:-/}"
 }
 
 # --- per-run lock, so two invocations never race on the same config/workdir --

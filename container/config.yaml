@@ -44,7 +44,10 @@
 #      testbed.dut / testbed.topology and REPLACES the real switch's running
 #      configuration. It runs for a physical DUT only with an explicit
 #      --deploy-mg or testbed.deploy_minigraph: true (default "auto" = never
-#      for physical). Back up the DUT config first.
+#      for physical), and only with --yes on the command line: --yes confirms the
+#      replacement of the DUT's running configuration. Without it the run stops
+#      before touching the DUT (no prompt, so CI behaves the same). Back up the DUT
+#      config first.
 #   2. SSH key install (--access-check, and the start of every test stage): ensure the
 #      sonic-mgmt public key exists in the DUT admin user's ~/.ssh/authorized_keys.
 #      The key is appended only if it is missing;
@@ -321,9 +324,11 @@ testbed:
                                   # true : full, --test-only, --pretest and --smoke-test push the generated
                                   #        minigraph first (--pretest/--smoke-test only when not already
                                   #        recorded as done since the last deploy). On a physical DUT this
-                                  #        overwrites its running config; the loader logs a warning.
+                                  #        overwrites its running config; the loader logs a warning, and the
+                                  #        run stops unless --yes is given (it confirms that replacement).
                                   # false: none of them ever push it (a DUT you configure yourself).
-                                  # An explicit --deploy-mg always pushes, whatever this says.
+                                  # An explicit --deploy-mg always pushes, whatever this says (on a
+                                  # physical DUT it needs --yes too). A virtual DUT never needs --yes.
 
   # ---------------------------------------------------------------------------
   # ADVANCED - NOT RECOMMENDED TO MODIFY unless you really know what you are doing.

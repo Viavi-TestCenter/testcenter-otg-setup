@@ -12,7 +12,10 @@ record_phase() { PHASE_RECORDS+=("$1|$2|${3:-}"); }
 # phase executes, so a run's console/log output is self-describing even
 # without opening config.yaml. Purely informational - reads CFG_*, never
 # mutates state.
-row() { printf '%-32s : %s\n' "$1" "$2"; }
+row() {
+    # An empty label makes a continuation line, aligned under the previous value.
+    if [[ -z "$1" ]]; then printf '%-32s   %s\n' "" "$2"; else printf '%-32s : %s\n' "$1" "$2"; fi
+}
 
 print_run_config() {
     log_step "Run configuration"
