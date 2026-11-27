@@ -37,6 +37,7 @@ phase_gen_config() {
 
     _gen_testbed_config "${ansible_dir}"
     _gen_password_file "${ansible_dir}"
+    invalidate_stale_deploy_mg
 
     # ansible-inventory runs inside the sonic-mgmt container.
     if docker ps --format '{{.Names}}' | grep -qx "${SONIC_MGMT_CONTAINER}"; then

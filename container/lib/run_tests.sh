@@ -6,16 +6,83 @@
 RESULT_DEPLOY_MG="SKIPPED"; RESULT_PRETEST="SKIPPED"; RESULT_SMOKE="SKIPPED"
 SUMMARY_DEPLOY_MG=""; SUMMARY_PRETEST=""; SUMMARY_SMOKE=""
 
+# ------------------------------------------------------ minigraph record ----
+# DEPLOY_MG_DONE=1 in $STATE_FILE means "this tool pushed a minigraph, built from the settings in
+# DEPLOY_MG_FINGERPRINT, and that push succeeded". It is only a local record: it is dropped when a
+# virtual DUT is (re)deployed or destroyed, before every push, and by invalidate_stale_deploy_mg
+# when the settings the minigraph is built from have changed. For a physical DUT it can never prove
+# the DUT's actual configuration - the DUT may have been changed by hand since.
+#
+# The fingerprint covers only what the minigraph is built from: the DUT (target, hostname, mgmt IP,
+# hwsku, interface speed, port count), its links, the topology (name, DUT type, VLAN) and whether a
+# push is wanted at all (testbed.deploy_minigraph as it resolves for this target). Not the testbed
+# definition names, endpoints, credentials, license, STC version, Allure, ... : those do not change
+# what the DUT would be given.
+_minigraph_fingerprint() {
+    local i v ref
+    {
+        printf '%s\n' "target=${CFG_TARGET}" "hostname=${CFG_DUT_HOSTNAME}" "mgmt_ip=${CFG_DUT_MGMT_IP}" \
+            "hwsku=${CFG_DUT_HWSKU}" "iface_speed=${CFG_DUT_IFACE_SPEED:-}" "total_ports=${CFG_DUT_TOTAL_PORTS:-}" \
+            "links=${CFG_DUT_LINKS_COUNT:-0}" \
+            "topo=${CFG_TOPO_NAME:-}" "dut_type=${CFG_TOPO_DUT_TYPE:-}" "vlan_id=${CFG_TOPO_VLAN_ID:-}" \
+            "vlan_prefix=${CFG_TOPO_VLAN_PREFIX:-}" "vlan_prefix_v6=${CFG_TOPO_VLAN_PREFIX_V6:-}" \
+            "vlan_tag=${CFG_TOPO_VLAN_TAG:-}" "vlan_mac=${CFG_TOPO_VLAN_MAC:-}" \
+            "deploy_minigraph=${CFG_DEPLOY_MINIGRAPH_EFFECTIVE:-}"
+        for (( i=0; i<${CFG_DUT_LINKS_COUNT:-0}; i++ )); do
+            for v in DUT_PORT STC_PORT BANDWIDTH VLAN_ID; do
+                ref="CFG_DUT_LINK_${i}_${v}"
+                printf 'link%s.%s=%s\n' "${i}" "${v}" "${!ref:-}"
+            done
+        done
+    } | sha256sum | cut -d' ' -f1
+}
+
+clear_deploy_mg_state() {
+    state_set "${STATE_FILE}" DEPLOY_MG_DONE 0
+    state_set "${STATE_FILE}" DEPLOY_MG_FINGERPRINT ""
+}
+
+# Is a recorded push still applicable to the current settings? A done flag without a matching
+# fingerprint (never written, or written for other settings) is not.
+deploy_mg_done_valid() {
+    state_owns "${STATE_FILE}" DEPLOY_MG_DONE || return 1
+    [[ "$(state_get "${STATE_FILE}" DEPLOY_MG_FINGERPRINT)" == "$(_minigraph_fingerprint)" ]]
+}
+
+# Called once the testbed files are generated from the current config (phase_gen_config): a recorded
+# push for different settings is dropped, and MG_INVALIDATED=1 lets the caller tell the user. Silent
+# when nothing was recorded.
+MG_INVALIDATED=0
+invalidate_stale_deploy_mg() {
+    MG_INVALIDATED=0
+    state_owns "${STATE_FILE}" DEPLOY_MG_DONE || return 0
+    deploy_mg_done_valid && return 0
+    clear_deploy_mg_state
+    MG_INVALIDATED=1
+}
+
+warn_deploy_mg_stale() {
+    [[ "${MG_INVALIDATED:-0}" == "1" ]] || return 0
+    log_warn "Testbed configuration changed."
+    log_detail "Run --deploy-mg before running tests that require the updated DUT configuration."
+}
+
 phase_deploy_mg() {
     log_step "Deploying minigraph to DUT (deploy-mg)"
     mkdir -p "${LOG_DIR}"
     local log="${LOG_DIR}/deploy_mg.log"
+
+    # From here on the DUT is being modified: whatever was recorded no longer holds, and must stay
+    # gone if this attempt fails or is interrupted. Recorded as done only after it succeeded.
+    clear_deploy_mg_state
 
     local cmd="./testbed-cli.sh -t testbed.yaml deploy-mg ${CFG_TESTBED_CONF_NAME} ${CFG_TESTBED_INV_NAME} password.txt -vvvv"
     log_cmd "${cmd}"
     sonic_mgmt_exec ansible "${cmd}" > "${log}" 2>&1 &
     if spinner_wait "deploy-mg" $!; then
         RESULT_DEPLOY_MG="PASSED"
+        state_set "${STATE_FILE}" DEPLOY_MG_FINGERPRINT "$(_minigraph_fingerprint)"
+        state_set "${STATE_FILE}" DEPLOY_MG_DONE 1
         log_ok "deploy-mg PASSED (log: ${log})"
     else
         RESULT_DEPLOY_MG="FAILED"

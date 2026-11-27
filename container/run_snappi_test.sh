@@ -242,7 +242,9 @@ run_stages() {
             || die_wrap "sonic-mgmt source not found at ${SONIC_MGMT_DIR}." \
                 "--gen-config assumes the environment has already been deployed at least once. Run without this option, or --deploy-only, first."
         phase_gen_config
-        exit $?
+        local gen_rc=$?
+        warn_deploy_mg_stale
+        exit "${gen_rc}"
     fi
 
     print_run_config
@@ -278,6 +280,10 @@ run_stages() {
         # The record of what was deployed is dropped first and written again only on success,
         # so a failed deploy cannot leave tests running against a half-replaced environment.
         clear_deployed_identity
+        # A virtual DUT is recreated by every deploy (containerlab), so a minigraph pushed to the
+        # previous one is gone - dropped as the deploy starts, so a failed deploy cannot leave a stale
+        # "done" behind. A physical DUT is not touched by the deploy, so its record is kept.
+        [[ "${CFG_DUT_MODE}" == "virtual" ]] && clear_deploy_mg_state
         if phase_deploy_services; then
             record_deployed_identity
             if [[ "${CFG_TC_MODE}" == "virtual" ]]; then
@@ -285,13 +291,6 @@ run_stages() {
             else
                 record_phase "Service deployment" "OK" "labserver=${CFG_LABSERVER_MODE} otg=${CFG_OTG_MODE} (deployment.target=physical, no clab)"
             fi
-            # containerlab (when deployment.target=virtual) always recreates the DUT
-            # node above, which wipes out any minigraph pushed by a previous
-            # deploy-mg - so a prior "done" flag must not survive past this point.
-            # Cleared unconditionally (not just on success, and regardless of
-            # target) so a failed deploy-mg right after this can't leave a stale
-            # DEPLOY_MG_DONE=1 from an earlier run in place.
-            state_set "${STATE_FILE}" DEPLOY_MG_DONE 0
         else
             record_phase "Service deployment" "FAILED"; phase_report; exit 1
         fi
@@ -339,8 +338,9 @@ run_stages() {
     # The minigraph is pushed when this run must guarantee a fresh one and
     # testbed.deploy_minigraph allows it: --deploy-mg always pushes; full/--test-only
     # push whenever the effective setting is true (always on a virtual lab under
-    # "auto"); --pretest/--smoke-test push only if a previous deploy-mg hasn't already
-    # been recorded as done since the environment was last (re)deployed or destroyed.
+    # "auto"); --pretest/--smoke-test push only if no push is recorded for the current
+    # settings (the record is dropped when a virtual DUT is redeployed, and by gen-config
+    # when the minigraph-relevant settings changed - see deploy_mg_done_valid).
     # A physical DUT under "auto" is never pushed to automatically.
     NEED_DEPLOY_MG=0
     case "${MODE}" in
@@ -348,7 +348,7 @@ run_stages() {
         full|test-only)
             [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && NEED_DEPLOY_MG=1 ;;
         pretest|smoke-test)
-            if [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && ! state_owns "${STATE_FILE}" DEPLOY_MG_DONE; then
+            if [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" == "1" ]] && ! deploy_mg_done_valid; then
                 NEED_DEPLOY_MG=1
             fi ;;
         *) ;;  # other modes never push a minigraph implicitly
@@ -357,7 +357,6 @@ run_stages() {
     if [[ "${NEED_DEPLOY_MG}" -eq 1 ]]; then
         if phase_deploy_mg; then
             record_phase "deploy-mg" "${RESULT_DEPLOY_MG}"
-            state_set "${STATE_FILE}" DEPLOY_MG_DONE 1
         else
             record_phase "deploy-mg" "${RESULT_DEPLOY_MG}"
             cleanup_env_on_failure
@@ -366,9 +365,15 @@ run_stages() {
     elif [[ "${CFG_DEPLOY_MINIGRAPH_EFFECTIVE}" != "1" ]]; then
         log_ok "testbed.deploy_minigraph resolves to false (${CFG_DEPLOY_MINIGRAPH:-auto}, target ${CFG_TARGET}) - no minigraph pushed."
         log_detail "The DUT's configuration is left as it is. Use --deploy-mg to push explicitly."
+        warn_deploy_mg_stale
         record_phase "deploy-mg" "SKIPPED" "deploy_minigraph=${CFG_DEPLOY_MINIGRAPH:-auto} on ${CFG_TARGET}"
     else
-        log_ok "deploy-mg already done since the environment was last (re)deployed - skipping (use --deploy-mg to force a rerun)"
+        if [[ "${CFG_DUT_MODE}" == "virtual" ]]; then
+            log_ok "deploy-mg already done since the environment was last (re)deployed - skipping (use --deploy-mg to force a rerun)"
+        else
+            # Only this tool's own record: the physical DUT may have been changed since.
+            log_ok "deploy-mg was recorded as done for these settings (not verified on the physical DUT) - skipping (use --deploy-mg to push again)"
+        fi
         record_phase "deploy-mg" "SKIPPED" "already done"
     fi
 

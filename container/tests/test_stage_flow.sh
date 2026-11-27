@@ -51,6 +51,7 @@ run_mode() {
         clear_deployed_identity() { :; }; record_deployed_identity() { :; }; check_deployed_identity() { :; }
         state_set() { :; }
         state_owns() { [[ "${done}" == "1" ]]; }
+        deploy_mg_done_valid() { [[ "${done}" == "1" ]]; }; clear_deploy_mg_state() { :; }; warn_deploy_mg_stale() { :; }
         run_stages
     ) 2>&1 | sed -n 's/^CALL phase_//p; s/^CALL \(cleanup_env_on_failure\|require_deployed_environment\)$/\1/p' | tr '\n' ' ' | sed 's/ $//'
 }

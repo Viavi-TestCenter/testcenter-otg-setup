@@ -267,6 +267,19 @@ this check.
 is never pushed automatically, unless you set `testbed.deploy_minigraph: true` or run
 `--deploy-mg`.
 
+The tool remembers a successful push, and forgets it when it can no longer apply:
+
+- A virtual DUT is recreated by every deploy, so `--deploy-only` (or a full run) forgets the push.
+  A push that fails or is interrupted is not remembered either.
+- `--gen-config` (and every test step, which runs it first) forgets the push when the settings the
+  minigraph is built from have changed since it: `testbed.dut` (`hostname`, `mgmt_ip`, `hwsku`,
+  `iface_speed`, `total_ports`, `links`), `testbed.topology`, and whether
+  `testbed.deploy_minigraph` resolves to a push. Other settings do not matter. On a virtual lab
+  the next test step pushes again by itself; otherwise it prints "Testbed configuration changed"
+  and you run `--deploy-mg`.
+- On a physical DUT this is only the tool's own record. The DUT may have been changed by hand since,
+  so it is never treated as proof of the DUT's configuration, and `auto` still never pushes to it.
+
 ---
 
 ## 6. Configuration

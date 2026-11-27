@@ -861,7 +861,7 @@ phase_destroy() {
     # Any previously deployed minigraph is gone once the environment is torn
     # down - a later --pretest/--smoke-test must not skip deploy-mg based on
     # a stale "done" flag from before this teardown.
-    state_set "${STATE_FILE}" DEPLOY_MG_DONE 0
+    clear_deploy_mg_state
     state_set "${STATE_FILE}" LABSERVER_UNLICENSED 0
     clear_deployed_identity
 
